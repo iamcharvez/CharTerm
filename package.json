@@ -1,0 +1,42 @@
+{
+  "name": "charterm",
+  "private": true,
+  "version": "0.4.0",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:versions": "node scripts/check-versions.mjs",
+    "tauri": "tauri",
+    "bundle": "tauri build",
+    "bundle:windows": "tauri build --bundles nsis,msi",
+    "bundle:linux": "tauri build --bundles appimage,deb,rpm",
+    "bundle:macos": "tauri build --bundles app,dmg"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "lucide-react": "^0.577.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.3",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "jsdom": "^30.1.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}

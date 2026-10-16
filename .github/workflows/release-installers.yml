@@ -1,0 +1,86 @@
+name: Build desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-installers:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            platform: windows-latest
+            args: --bundles nsis,msi
+          - label: Linux x64
+            platform: ubuntu-22.04
+            args: --bundles appimage,deb,rpm
+          - label: macOS Apple Silicon
+            platform: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles app,dmg
+          - label: macOS Intel
+            platform: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles app,dmg
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2 rpm
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Cache Rust build files
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Validate release metadata
+        run: npm run check:versions
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build installers and create draft release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && '-' || '' }}
+        with:
+          tagName: v__VERSION__
+          releaseName: CharTerm v__VERSION__
+          releaseBody: |
+            CharTerm desktop installers for Windows, Linux, and macOS.
+
+            Private by Design. Reliable by Default.
+          releaseDraft: true
+          prerelease: false
+          uploadWorkflowArtifacts: true
+          args: ${{ matrix.args }}

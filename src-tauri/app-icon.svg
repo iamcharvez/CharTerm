@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title description">
+  <title id="title">CharTerm application icon</title>
+  <desc id="description">A modern terminal prompt inside a rounded dark tile.</desc>
+  <defs>
+    <linearGradient id="surface" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172554"/>
+      <stop offset="0.5" stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="164" y1="164" x2="860" y2="860" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22D3EE"/>
+      <stop offset="0.55" stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#818CF8"/>
+    </linearGradient>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="224" fill="url(#surface)"/>
+  <rect x="68" y="68" width="888" height="888" rx="204" fill="none" stroke="url(#accent)" stroke-width="40"/>
+  <path d="M266 342 446 512 266 682" fill="none" stroke="url(#accent)" stroke-width="76" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M502 684h258" fill="none" stroke="#E0F2FE" stroke-width="76" stroke-linecap="round"/>
+  <circle cx="785" cy="259" r="34" fill="#22D3EE"/>
+</svg>
