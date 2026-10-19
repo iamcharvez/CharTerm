@@ -157,17 +157,17 @@ export function IdentitiesPage() {
   const storeInspection = async (inspection: Inspection) => {
     const existing = identities.find((item) => item.id === editingId);
     const id = existing?.id ?? crypto.randomUUID();
+    if (savePassphrase && passphrase) {
+      await invoke("save_identity_passphrase", { identityId: id, passphrase });
+    } else if (!savePassphrase && existing?.hasSavedPassphrase) {
+      await invoke("delete_identity_passphrase", { identityId: id });
+    }
     saveIdentity({
       name: name.trim() || inspection.algorithm.toUpperCase(),
       ...inspection,
       certificatePath: certificatePath || undefined,
       hasSavedPassphrase: savePassphrase && (Boolean(passphrase) || Boolean(existing?.hasSavedPassphrase)),
     }, id);
-    if (savePassphrase && passphrase) {
-      await invoke("save_identity_passphrase", { identityId: id, passphrase });
-    } else if (!savePassphrase && existing?.hasSavedPassphrase) {
-      await invoke("delete_identity_passphrase", { identityId: id });
-    }
     setPassphrase("");
     setSuccess("Identity is ready to use in Quick Connect and saved profiles.");
     setMode("closed");
@@ -322,9 +322,9 @@ export function IdentitiesPage() {
             {mode === "generate" && <label className="field"><span>Algorithm</span><select value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}><option value="ed25519">Ed25519 (recommended)</option><option value="rsa">RSA 4096 (compatibility)</option></select></label>}
             <label className="field field-wide"><span>{mode === "generate" ? "Private key destination" : "Private key file"}</span><div className="path-picker"><input value={path} disabled={mode === "edit"} onChange={(event) => setPath(event.target.value)} placeholder="Choose a key file…" />{mode !== "edit" && <button type="button" onClick={() => void (mode === "generate" ? chooseGeneratedPath() : choosePrivateKey())}>Browse</button>}</div></label>
             <label className="field field-wide"><span>OpenSSH certificate <small>optional, *-cert.pub</small></span><div className="path-picker"><input value={certificatePath} onChange={(event) => setCertificatePath(event.target.value)} placeholder="No certificate selected" /><button type="button" onClick={() => void chooseCertificate()}>Browse</button></div></label>
-            <label className="field field-wide"><span>Private-key passphrase <small>{mode === "generate" ? "recommended" : "only if this key is encrypted"}</small></span><PasswordInput value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="off" /></label>
+            <label className="field field-wide"><span>Private-key passphrase <small>{mode === "generate" ? "protects this key" : "used to inspect this key"}</small></span><PasswordInput value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="off" /></label>
           </div>
-          <label className="secure-option"><input type="checkbox" checked={savePassphrase} disabled={!passphrase} onChange={(event) => setSavePassphrase(event.target.checked)} /><LockCopy /> Save passphrase in the operating-system credential vault</label>
+          <label className="secure-option"><input type="checkbox" checked={savePassphrase} disabled={!passphrase} onChange={(event) => setSavePassphrase(event.target.checked)} /><LockCopy /> Save in the operating-system credential vault to avoid entering it on each connection</label>
           {tools?.nativeGenerator && mode === "generate" && <div className="identity-native-note"><ShieldCheck size={15} /> Generated privately inside CharTerm—PuTTY and ssh-keygen are not required.</div>}
           <div className="form-actions"><button className="secondary-action" type="button" onClick={() => reset("closed")}>Cancel</button><button className="primary-action" disabled={busy} type="submit">{busy ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />} {mode === "generate" ? "Generate identity" : mode === "edit" ? "Save identity" : "Import identity"}</button></div>
         </form>

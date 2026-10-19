@@ -106,6 +106,27 @@ fn validate_forward(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SecretPrompt {
+    KeyPassphrase,
+    AccountPassword,
+}
+
+fn secret_prompt(output: &str) -> Option<SecretPrompt> {
+    let prompt = output
+        .rsplit(['\r', '\n'])
+        .next()
+        .unwrap_or(output)
+        .to_ascii_lowercase();
+    if prompt.contains("passphrase for key") && prompt.trim_end().ends_with(':') {
+        Some(SecretPrompt::KeyPassphrase)
+    } else if prompt.contains("password:") {
+        Some(SecretPrompt::AccountPassword)
+    } else {
+        None
+    }
+}
+
 fn start_terminal_session(
     session_id: String,
     cols: u16,
@@ -113,6 +134,7 @@ fn start_terminal_session(
     command: CommandBuilder,
     process_label: &str,
     mut password: Option<String>,
+    mut key_passphrase: Option<String>,
     on_event: Channel<TerminalEvent>,
     manager: &LocalTerminalManager,
 ) -> Result<(), String> {
@@ -173,7 +195,7 @@ fn start_terminal_session(
                     if reader_session.transfer_route.capture(&buffer[..length]) {
                         continue;
                     }
-                    if password.is_some() {
+                    if password.is_some() || key_passphrase.is_some() {
                         let output = String::from_utf8_lossy(&buffer[..length]).to_lowercase();
                         prompt_tail = format!("{prompt_tail}{output}");
                         prompt_tail = prompt_tail
@@ -184,17 +206,19 @@ fn start_terminal_session(
                             .into_iter()
                             .rev()
                             .collect();
-                        if prompt_tail.contains("password:")
-                            || prompt_tail.contains("passphrase for key")
-                        {
-                            if let Some(mut secret) = password.take() {
-                                if let Ok(mut writer) = reader_session.writer.lock() {
-                                    let _ = writer.write_all(secret.as_bytes());
-                                    let _ = writer.write_all(b"\r");
-                                    let _ = writer.flush();
-                                }
-                                secret.zeroize();
+                        let secret = match secret_prompt(&prompt_tail) {
+                            Some(SecretPrompt::KeyPassphrase) => key_passphrase.take(),
+                            Some(SecretPrompt::AccountPassword) => password.take(),
+                            None => None,
+                        };
+                        if let Some(mut secret) = secret {
+                            if let Ok(mut writer) = reader_session.writer.lock() {
+                                let _ = writer.write_all(secret.as_bytes());
+                                let _ = writer.write_all(b"\r");
+                                let _ = writer.flush();
                             }
+                            secret.zeroize();
+                            prompt_tail.clear();
                         }
                     }
                     if on_event
@@ -260,6 +284,7 @@ pub fn create_local_terminal(
         rows,
         command,
         "the local shell",
+        None,
         None,
         on_event,
         &manager,
@@ -426,9 +451,7 @@ pub fn create_ssh_terminal(
         key_passphrase = identity_id
             .as_deref()
             .map(crate::credentials::load_identity_passphrase)
-            .transpose()
-            .ok()
-            .flatten();
+            .transpose()?;
     }
 
     start_terminal_session(
@@ -437,9 +460,8 @@ pub fn create_ssh_terminal(
         rows,
         command,
         "the SSH client (make sure OpenSSH is installed)",
-        key_passphrase
-            .filter(|value| !value.is_empty())
-            .or(password),
+        password,
+        key_passphrase.filter(|value| !value.is_empty()),
         on_event,
         &manager,
     )
@@ -539,9 +561,7 @@ pub fn create_sftp_terminal(
         key_passphrase = identity_id
             .as_deref()
             .map(crate::credentials::load_identity_passphrase)
-            .transpose()
-            .ok()
-            .flatten();
+            .transpose()?;
     }
 
     start_terminal_session(
@@ -550,9 +570,8 @@ pub fn create_sftp_terminal(
         rows,
         command,
         "the SFTP client (make sure OpenSSH is installed)",
-        key_passphrase
-            .filter(|value| !value.is_empty())
-            .or(password),
+        password,
+        key_passphrase.filter(|value| !value.is_empty()),
         on_event,
         &manager,
     )
@@ -635,6 +654,23 @@ pub fn close_local_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_secret_prompts_are_distinct() {
+        assert_eq!(
+            secret_prompt("Enter passphrase for key 'C:\\Users\\HP\\.ssh\\id_ed25519': "),
+            Some(SecretPrompt::KeyPassphrase)
+        );
+        assert_eq!(
+            secret_prompt("user@example.com's password: "),
+            Some(SecretPrompt::AccountPassword)
+        );
+        assert_eq!(
+            secret_prompt("Permission denied (publickey,password)."),
+            None
+        );
+        assert_eq!(secret_prompt("Enter passphrase for key 'id_ed25519'"), None);
+    }
 
     #[test]
     fn ssh_target_validation_rejects_command_options() {
