@@ -73,14 +73,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && '-' || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: CharTerm v__VERSION__
           releaseBody: |
-            CharTerm desktop installers for Windows, Linux, and macOS.
+            ## Download CharTerm
+
+            Select the installer for your platform from the Assets section:
+
+            - **Windows:** `.exe` (recommended) or `.msi`
+            - **macOS:** `.dmg` for Apple Silicon or Intel
+            - **Linux:** AppImage, `.deb`, or `.rpm`
 
             Private by Design. Reliable by Default.
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
+          releaseAssetNamePattern: CharTerm-[platform]-[arch][setup][ext]
+          retryAttempts: 2
+          updaterJsonPreferNsis: true
           uploadWorkflowArtifacts: true
           args: ${{ matrix.args }}

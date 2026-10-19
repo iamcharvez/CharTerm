@@ -2,7 +2,19 @@
 
 **Charvez Terminal — One Terminal. Every Connection.**
 
-[![Download CharTerm](https://img.shields.io/badge/Download-CharTerm-22D3EE?style=for-the-badge&logo=github)](https://github.com/iamcharvez/CharTerm/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/iamcharvez/CharTerm?display_name=tag&sort=semver&style=flat-square&color=22D3EE)](https://github.com/iamcharvez/CharTerm/releases/latest)
+[![Release builds](https://github.com/iamcharvez/CharTerm/actions/workflows/release-installers.yml/badge.svg)](https://github.com/iamcharvez/CharTerm/actions/workflows/release-installers.yml)
+
+## Download CharTerm
+
+Choose your platform below. Each button opens the **Assets** section of the latest published GitHub Release, where you can select the installer format and, on macOS, the correct processor architecture.
+
+| Windows | macOS | Linux |
+| :---: | :---: | :---: |
+| [![Download for Windows](https://img.shields.io/badge/Download_for_Windows-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/iamcharvez/CharTerm/releases/latest#assets) | [![Download for macOS](https://img.shields.io/badge/Download_for_macOS-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/iamcharvez/CharTerm/releases/latest#assets) | [![Download for Linux](https://img.shields.io/badge/Download_for_Linux-FCC624?style=for-the-badge&logo=linux&logoColor=111111)](https://github.com/iamcharvez/CharTerm/releases/latest#assets) |
+| `.exe` recommended; `.msi` also available | Apple Silicon and Intel `.dmg` | AppImage, `.deb`, and `.rpm` |
+
+> The buttons show the newest **published** release. Draft releases are visible only to the repository owner and do not replace the public download until they are published.
 
 This repository contains the active CharTerm desktop application. The current build includes a responsive connection dashboard, protocol-aware Quick Connect, searchable saved profiles with unlimited nested groups, favorites, recent sessions, a network scanner, an IPv4/IPv6 subnet calculator, reusable SSH identities, recoverable workspaces with single, column, row, and grid layouts, a transfer-aware dual-pane SFTP file manager, a native connection and background-job registry, bounded SQLite activity logs, complete Settings navigation, and signed automatic updates.
 

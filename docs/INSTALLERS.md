@@ -1,6 +1,6 @@
 # CharTerm installers
 
-CharTerm uses native GitHub Actions runners to build installation packages for Windows, Linux, and macOS. The workflow is defined in [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+CharTerm uses native GitHub Actions runners to build installation packages for Windows, Linux, and macOS. The single release workflow is defined in [`.github/workflows/release-installers.yml`](../.github/workflows/release-installers.yml).
 
 ## Generated packages
 
@@ -16,16 +16,20 @@ Every workflow run uploads its packages as GitHub Actions artifacts and creates 
 
 1. Keep the version identical in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Run `npm run check:versions` to verify it.
 2. Commit and push the source to GitHub.
-3. Either run **Build desktop installers** from the repository's **Actions** page, or create and push a matching version tag:
+3. Either run **Build desktop installers** from the repository's **Actions** page, or create and push an annotated tag from the version in `package.json`:
 
    ```powershell
-   git tag v0.8.7
-   git push origin v0.8.7
+   $charTermVersion = (Get-Content package.json | ConvertFrom-Json).version
+   git tag -a "v$charTermVersion" -m "CharTerm v$charTermVersion"
+   git push origin "v$charTermVersion"
    ```
 
-4. Download the packages from the workflow's **Artifacts** section. For a tagged build, review the draft under **Releases**, attach release notes if needed, and publish it.
+4. Wait for all four jobs—Windows x64, Linux x64, macOS Apple Silicon, and macOS Intel—to finish successfully.
+5. Open the new draft under **Releases**, verify that every expected installer is attached, and select **Publish release**. The README platform buttons then resolve to this release automatically.
 
-The tag should match the version in the three metadata files. The workflow rejects mismatched internal versions before packaging.
+The release remains a draft while the native builds are running so visitors never see a partially populated release. Workflow artifacts are also available from the completed Actions run for testing before publication.
+
+The tag must match the version in the three metadata files. The workflow rejects mismatched internal versions and mismatched pushed tags before packaging.
 
 ## Build locally
 
