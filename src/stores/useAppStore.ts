@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { loadPreferences, type CharTermPreferences } from "../lib/preferences";
 
 export type AppPage =
   | "dashboard"
@@ -9,11 +9,31 @@ export type AppPage =
   | "recent"
   | "network-scanner"
   | "ip-calculator"
+  | "identities"
+  | "workspaces"
   | "local-terminal"
   | "settings";
 
-export type ConnectionProtocol = "ssh" | "sftp" | "telnet" | "serial";
+export type ConnectionProtocol = "ssh" | "sftp" | "telnet" | "serial" | "tcp";
 export type LegacyCompatibility = "host-key" | "mac" | "key-exchange" | "cipher";
+export type TerminalLayout = "single" | "columns" | "rows" | "grid";
+export type AuthenticationMode = "auto" | "identity" | "agent" | "password";
+export type SerialParity = "none" | "odd" | "even";
+export type SerialFlowControl = "none" | "hardware" | "software";
+export type SerialEncoding = "utf-8" | "windows-1252" | "iso-8859-1";
+
+export type SshIdentity = {
+  id: string;
+  name: string;
+  privateKeyPath: string;
+  publicKeyPath?: string;
+  certificatePath?: string;
+  publicKey?: string;
+  fingerprint: string;
+  algorithm: string;
+  hasSavedPassphrase?: boolean;
+  createdAt: number;
+};
 
 export type ConnectionGroup = {
   id: string;
@@ -31,12 +51,28 @@ export type ConnectionProfile = {
   username?: string;
   serialPort?: string;
   baudRate?: number;
+  serialDataBits?: 5 | 6 | 7 | 8;
+  serialStopBits?: 1 | 2;
+  serialParity?: SerialParity;
+  serialFlowControl?: SerialFlowControl;
+  serialEncoding?: SerialEncoding;
   groupId?: string;
   allowLegacySshRsa?: boolean;
   allowLegacyMacSha1?: boolean;
   allowLegacyKexSha1?: boolean;
   allowLegacyCiphers?: boolean;
   hasSavedPassword?: boolean;
+  authenticationMode?: AuthenticationMode;
+  identityId?: string;
+  jumpHost?: string;
+  jumpPort?: number;
+  jumpUsername?: string;
+  startupCommand?: string;
+  enableCompression?: boolean;
+  agentForwarding?: boolean;
+  localForward?: string;
+  remoteForward?: string;
+  dynamicForward?: number;
   favorite: boolean;
   createdAt: number;
   lastUsedAt?: number;
@@ -53,18 +89,41 @@ export type TerminalTab = {
   kind: "local" | ConnectionProtocol;
   connection?: ConnectionProfile;
   sessionPassword?: string;
+  sessionKeyPassphrase?: string;
+  restored?: boolean;
+};
+
+export type PersistentAppState = {
+  preferences?: CharTermPreferences;
+  profiles: ConnectionProfile[];
+  groups: ConnectionGroup[];
+  identities: SshIdentity[];
+  recentProfileIds: string[];
+  terminalTabs: TerminalTab[];
+  activeTerminalId: string | null;
+  terminalLayout: TerminalLayout;
+  terminalPaneIds: string[];
 };
 
 type AppState = {
+  databaseReady: boolean;
   page: AppPage;
   terminalTabs: TerminalTab[];
   activeTerminalId: string | null;
+  terminalLayout: TerminalLayout;
+  terminalPaneIds: string[];
+  editingProfileId: string | null;
   profiles: ConnectionProfile[];
   groups: ConnectionGroup[];
+  identities: SshIdentity[];
   recentProfileIds: string[];
+  hydrateApplicationState: (snapshot?: Partial<PersistentAppState>) => void;
   navigate: (page: AppPage) => void;
+  editConnection: (id: string) => void;
   openLocalTerminal: () => void;
-  openConnection: (connection: ConnectionProfile, sessionPassword?: string) => void;
+  openConnection: (connection: ConnectionProfile, sessionPassword?: string, sessionKeyPassphrase?: string) => void;
+  saveIdentity: (identity: Omit<SshIdentity, "id" | "createdAt">, existingId?: string) => string;
+  deleteIdentity: (id: string) => void;
   saveProfile: (draft: ConnectionDraft, existingId?: string) => string;
   deleteProfile: (id: string) => void;
   duplicateProfile: (id: string) => void;
@@ -79,24 +138,83 @@ type AppState = {
   ) => void;
   setSessionUsername: (terminalId: string, username: string) => void;
   selectTerminal: (id: string) => void;
+  setTerminalLayout: (layout: TerminalLayout) => void;
+  addTerminalPane: () => void;
+  removeTerminalPane: (id: string) => void;
   closeTerminal: (id: string) => void;
 };
 
 const makeId = () => crypto.randomUUID();
 
+function terminalPaneLimit(layout: TerminalLayout) {
+  if (layout === "single") return 0;
+  if (layout === "grid") return 4;
+  return 2;
+}
+
 export const useAppStore = create<AppState>()(
-  persist(
     (set) => ({
+      databaseReady: false,
       page: "dashboard",
       terminalTabs: [],
       activeTerminalId: null,
+      terminalLayout: "single",
+      terminalPaneIds: [],
+      editingProfileId: null,
       profiles: [],
       groups: [],
+      identities: [],
       recentProfileIds: [],
-      navigate: (page) => set({ page }),
+      hydrateApplicationState: (snapshot) =>
+        set((state) => {
+          const terminalTabs = Array.isArray(snapshot?.terminalTabs)
+            ? snapshot.terminalTabs.map((tab) => ({
+                ...tab,
+                sessionPassword: undefined,
+                sessionKeyPassphrase: undefined,
+                restored: true,
+              }))
+            : state.terminalTabs;
+          const terminalIds = new Set(terminalTabs.map((tab) => tab.id));
+          const requestedActiveId = snapshot?.activeTerminalId ?? null;
+          return {
+            databaseReady: true,
+            profiles: Array.isArray(snapshot?.profiles) ? snapshot.profiles : state.profiles,
+            groups: Array.isArray(snapshot?.groups) ? snapshot.groups : state.groups,
+            identities: Array.isArray(snapshot?.identities) ? snapshot.identities : state.identities,
+            recentProfileIds: Array.isArray(snapshot?.recentProfileIds)
+              ? snapshot.recentProfileIds
+              : state.recentProfileIds,
+            terminalTabs,
+            activeTerminalId: requestedActiveId && terminalIds.has(requestedActiveId)
+              ? requestedActiveId
+              : terminalTabs[0]?.id ?? null,
+            terminalLayout: snapshot?.terminalLayout ?? state.terminalLayout,
+            terminalPaneIds: Array.isArray(snapshot?.terminalPaneIds)
+              ? snapshot.terminalPaneIds
+                  .filter((id) => terminalIds.has(id))
+                  .slice(0, terminalPaneLimit(snapshot?.terminalLayout ?? state.terminalLayout))
+              : state.terminalPaneIds,
+          };
+        }),
+      navigate: (page) => set({ page, editingProfileId: null }),
+      editConnection: (id) =>
+        set((state) => ({
+          page: state.profiles.some((profile) => profile.id === id)
+            ? "quick-connect"
+            : state.page,
+          editingProfileId: state.profiles.some((profile) => profile.id === id)
+            ? id
+            : null,
+        })),
       openLocalTerminal: () =>
         set((state) => {
           const id = makeId();
+          const terminalPaneIds = state.terminalLayout === "single"
+            ? state.terminalPaneIds
+            : state.terminalPaneIds.map((paneId) =>
+                paneId === state.activeTerminalId ? id : paneId,
+              );
           return {
             page: "local-terminal",
             terminalTabs: [
@@ -108,15 +226,21 @@ export const useAppStore = create<AppState>()(
               },
             ],
             activeTerminalId: id,
+            terminalPaneIds,
           };
         }),
-      openConnection: (connection, sessionPassword) =>
+      openConnection: (connection, sessionPassword, sessionKeyPassphrase) =>
         set((state) => {
           const id = makeId();
           const now = Date.now();
           const isSaved = state.profiles.some(
             (profile) => profile.id === connection.id,
           );
+          const terminalPaneIds = state.terminalLayout === "single"
+            ? state.terminalPaneIds
+            : state.terminalPaneIds.map((paneId) =>
+                paneId === state.activeTerminalId ? id : paneId,
+              );
           return {
             page: "local-terminal",
             terminalTabs: [
@@ -127,9 +251,11 @@ export const useAppStore = create<AppState>()(
                 kind: connection.protocol,
                 connection,
                 sessionPassword: sessionPassword || undefined,
+                sessionKeyPassphrase: sessionKeyPassphrase || undefined,
               },
             ],
             activeTerminalId: id,
+            terminalPaneIds,
             profiles: isSaved
               ? state.profiles.map((profile) =>
                   profile.id === connection.id
@@ -147,6 +273,29 @@ export const useAppStore = create<AppState>()(
               : state.recentProfileIds,
           };
         }),
+      saveIdentity: (identity, existingId) => {
+        const id = existingId ?? makeId();
+        set((state) => {
+          const current = state.identities.find((item) => item.id === id);
+          const next: SshIdentity = {
+            ...identity,
+            id,
+            createdAt: current?.createdAt ?? Date.now(),
+          };
+          return {
+            identities: current
+              ? state.identities.map((item) => item.id === id ? next : item)
+              : [...state.identities, next],
+          };
+        });
+        return id;
+      },
+      deleteIdentity: (id) => set((state) => ({
+        identities: state.identities.filter((item) => item.id !== id),
+        profiles: state.profiles.map((profile) => profile.identityId === id
+          ? { ...profile, identityId: undefined, authenticationMode: "auto" }
+          : profile),
+      })),
       saveProfile: (draft, existingId) => {
         const id = existingId ?? makeId();
         set((state) => {
@@ -304,7 +453,73 @@ export const useAppStore = create<AppState>()(
           ),
         })),
       selectTerminal: (id) =>
-        set({ page: "local-terminal", activeTerminalId: id }),
+        set((state) => {
+          if (state.terminalLayout === "single" || state.terminalPaneIds.includes(id)) {
+            return { page: "local-terminal", activeTerminalId: id };
+          }
+          const replaceIndex = Math.max(
+            0,
+            state.terminalPaneIds.indexOf(state.activeTerminalId ?? ""),
+          );
+          const terminalPaneIds = [...state.terminalPaneIds];
+          terminalPaneIds[replaceIndex] = id;
+          return { page: "local-terminal", activeTerminalId: id, terminalPaneIds };
+        }),
+      setTerminalLayout: (layout) =>
+        set((state) => {
+          if (layout === "single") {
+            return { terminalLayout: layout, terminalPaneIds: [] };
+          }
+          const availableIds = state.terminalTabs.map((tab) => tab.id);
+          const existingIds = state.terminalPaneIds.filter((id) => availableIds.includes(id));
+          const orderedIds = [
+            ...(state.activeTerminalId ? [state.activeTerminalId] : []),
+            ...existingIds,
+            ...availableIds,
+          ].filter((id, index, values) => values.indexOf(id) === index);
+          return {
+            terminalLayout: layout,
+            terminalPaneIds: orderedIds.slice(
+              0,
+              Math.min(terminalPaneLimit(layout), orderedIds.length),
+            ),
+          };
+        }),
+      addTerminalPane: () =>
+        set((state) => {
+          const visibleIds = state.terminalLayout === "single"
+            ? (state.activeTerminalId ? [state.activeTerminalId] : [])
+            : state.terminalPaneIds;
+          const next = state.terminalTabs.find((tab) => !visibleIds.includes(tab.id));
+          if (!next) return {};
+          const terminalPaneIds = [...visibleIds, next.id].slice(0, 4);
+          return {
+            terminalLayout:
+              state.terminalLayout === "single"
+                ? "columns"
+                : terminalPaneIds.length > 2
+                  ? "grid"
+                  : state.terminalLayout,
+            terminalPaneIds,
+            activeTerminalId: next.id,
+          };
+        }),
+      removeTerminalPane: (id) =>
+        set((state) => {
+          const terminalPaneIds = state.terminalPaneIds.filter((paneId) => paneId !== id);
+          if (terminalPaneIds.length <= 1) {
+            return {
+              terminalLayout: "single",
+              terminalPaneIds: [],
+              activeTerminalId: terminalPaneIds[0] ?? state.activeTerminalId,
+            };
+          }
+          return {
+            terminalPaneIds,
+            activeTerminalId:
+              state.activeTerminalId === id ? terminalPaneIds[0] : state.activeTerminalId,
+          };
+        }),
       closeTerminal: (id) =>
         set((state) => {
           const index = state.terminalTabs.findIndex((tab) => tab.id === id);
@@ -312,22 +527,35 @@ export const useAppStore = create<AppState>()(
             (tab) => tab.id !== id,
           );
           const nextTab = terminalTabs[Math.min(index, terminalTabs.length - 1)];
+          const terminalPaneIds = state.terminalPaneIds.filter((paneId) => paneId !== id);
           return {
             terminalTabs,
+            terminalLayout: terminalPaneIds.length > 1 ? state.terminalLayout : "single",
+            terminalPaneIds: terminalPaneIds.length > 1 ? terminalPaneIds : [],
             activeTerminalId:
               state.activeTerminalId === id
-                ? (nextTab?.id ?? null)
+                ? (terminalPaneIds[0] ?? nextTab?.id ?? null)
                 : state.activeTerminalId,
           };
         }),
     }),
-    {
-      name: "charterm-workspace",
-      partialize: (state) => ({
-        profiles: state.profiles,
-        groups: state.groups,
-        recentProfileIds: state.recentProfileIds,
-      }),
-    },
-  ),
 );
+
+export function createPersistentSnapshot(state: AppState): PersistentAppState {
+  return {
+    preferences: loadPreferences(),
+    profiles: state.profiles,
+    groups: state.groups,
+    identities: state.identities,
+    recentProfileIds: state.recentProfileIds,
+    terminalTabs: state.terminalTabs.map((tab) => ({
+      ...tab,
+      sessionPassword: undefined,
+      sessionKeyPassphrase: undefined,
+      restored: undefined,
+    })),
+    activeTerminalId: state.activeTerminalId,
+    terminalLayout: state.terminalLayout,
+    terminalPaneIds: state.terminalPaneIds,
+  };
+}

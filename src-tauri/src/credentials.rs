@@ -1,4 +1,4 @@
-use keyring::Entry;
+use keyring::{Entry, Error};
 
 const SERVICE: &str = "com.charvez.charterm";
 
@@ -26,6 +26,10 @@ pub fn load_password(profile_id: &str) -> Result<String, String> {
         .map_err(|error| format!("Unable to read the saved password: {error}"))
 }
 
+pub fn load_identity_passphrase(identity_id: &str) -> Result<String, String> {
+    load_password(&format!("identity-{identity_id}"))
+}
+
 #[tauri::command]
 pub fn save_connection_password(profile_id: String, password: String) -> Result<(), String> {
     if password.is_empty() {
@@ -38,9 +42,30 @@ pub fn save_connection_password(profile_id: String, password: String) -> Result<
 
 #[tauri::command]
 pub fn delete_connection_password(profile_id: String) -> Result<(), String> {
-    entry(&profile_id)?
-        .delete_credential()
-        .map_err(|error| format!("Unable to remove the saved password: {error}"))
+    match entry(&profile_id)?.delete_credential() {
+        Ok(()) | Err(Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("Unable to remove the saved password: {error}")),
+    }
+}
+
+#[tauri::command]
+pub fn save_identity_passphrase(identity_id: String, passphrase: String) -> Result<(), String> {
+    if passphrase.is_empty() {
+        return Err("Enter a passphrase before saving it.".into());
+    }
+    entry(&format!("identity-{identity_id}"))?
+        .set_password(&passphrase)
+        .map_err(|error| format!("Unable to save the key passphrase securely: {error}"))
+}
+
+#[tauri::command]
+pub fn delete_identity_passphrase(identity_id: String) -> Result<(), String> {
+    match entry(&format!("identity-{identity_id}"))?.delete_credential() {
+        Ok(()) | Err(Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!(
+            "Unable to remove the saved key passphrase: {error}"
+        )),
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]

@@ -1,3 +1,4 @@
+use crate::terminal_transfer::{TransferEndpoint, TransferRoute};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::{
@@ -21,6 +22,7 @@ struct LocalTerminalSession {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
+    transfer_route: Arc<TransferRoute>,
 }
 
 #[derive(Clone, Serialize)]
@@ -88,6 +90,22 @@ fn validate_ssh_target(host: &str, username: &str, port: u16) -> Result<(), Stri
     Ok(())
 }
 
+fn validate_forward(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 512
+        || value.starts_with('-')
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".:-_[]".contains(character))
+    {
+        return Err(
+            "Port forwarding must use a safe OpenSSH address such as 127.0.0.1:8080:server:80."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn start_terminal_session(
     session_id: String,
     cols: u16,
@@ -136,6 +154,7 @@ fn start_terminal_session(
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
         child: Mutex::new(child),
+        transfer_route: Arc::new(TransferRoute::default()),
     });
 
     let reader_session = Arc::clone(&session);
@@ -151,6 +170,9 @@ fn start_terminal_session(
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(length) => {
+                    if reader_session.transfer_route.capture(&buffer[..length]) {
+                        continue;
+                    }
                     if password.is_some() {
                         let output = String::from_utf8_lossy(&buffer[..length]).to_lowercase();
                         prompt_tail = format!("{prompt_tail}{output}");
@@ -162,7 +184,9 @@ fn start_terminal_session(
                             .into_iter()
                             .rev()
                             .collect();
-                        if prompt_tail.contains("password:") {
+                        if prompt_tail.contains("password:")
+                            || prompt_tail.contains("passphrase for key")
+                        {
                             if let Some(mut secret) = password.take() {
                                 if let Ok(mut writer) = reader_session.writer.lock() {
                                     let _ = writer.write_all(secret.as_bytes());
@@ -198,6 +222,26 @@ fn start_terminal_session(
     });
 
     Ok(())
+}
+
+impl LocalTerminalManager {
+    pub(crate) fn transfer_endpoint(&self, session_id: &str) -> Result<TransferEndpoint, String> {
+        let session = self
+            .sessions
+            .lock()
+            .map_err(|_| lock_error())?
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| "The terminal session is no longer running.".to_string())?;
+        let route = Arc::clone(&session.transfer_route);
+        Ok(TransferEndpoint::new(route, move |bytes| {
+            let mut writer = session.writer.lock().map_err(|_| lock_error())?;
+            writer
+                .write_all(bytes)
+                .and_then(|_| writer.flush())
+                .map_err(|error| format!("Unable to write transfer data: {error}"))
+        }))
+    }
 }
 
 #[tauri::command]
@@ -238,6 +282,20 @@ pub fn create_ssh_terminal(
     allow_legacy_ciphers: bool,
     password: Option<String>,
     credential_id: Option<String>,
+    authentication_mode: Option<String>,
+    private_key_path: Option<String>,
+    certificate_path: Option<String>,
+    mut key_passphrase: Option<String>,
+    identity_id: Option<String>,
+    jump_host: Option<String>,
+    jump_port: Option<u16>,
+    jump_username: Option<String>,
+    startup_command: Option<String>,
+    enable_compression: bool,
+    agent_forwarding: bool,
+    local_forward: Option<String>,
+    remote_forward: Option<String>,
+    dynamic_forward: Option<u16>,
     on_event: Channel<TerminalEvent>,
     manager: State<'_, LocalTerminalManager>,
 ) -> Result<(), String> {
@@ -262,6 +320,71 @@ pub fn create_ssh_terminal(
         command.arg("-l");
         command.arg(username);
     }
+    let authentication_mode = authentication_mode.unwrap_or_else(|| "auto".into());
+    if enable_compression {
+        command.arg("-C");
+    }
+    if agent_forwarding {
+        command.arg("-A");
+    }
+    if let Some(jump_host) = jump_host
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let jump_host = jump_host.trim();
+        let jump_username = jump_username.as_deref().unwrap_or("").trim();
+        validate_ssh_target(jump_host, jump_username, jump_port.unwrap_or(22))?;
+        let authority = if jump_username.is_empty() {
+            jump_host.to_string()
+        } else {
+            format!("{jump_username}@{jump_host}")
+        };
+        command.arg("-J");
+        command.arg(format!("{authority}:{}", jump_port.unwrap_or(22)));
+    }
+    for (flag, value) in [
+        ("-L", local_forward.as_deref()),
+        ("-R", remote_forward.as_deref()),
+    ] {
+        if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+            validate_forward(value.trim())?;
+            command.arg(flag);
+            command.arg(value.trim());
+        }
+    }
+    if let Some(port) = dynamic_forward.filter(|port| *port > 0) {
+        command.arg("-D");
+        command.arg(format!("127.0.0.1:{port}"));
+    }
+    if let Some(path) = private_key_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if !PathBuf::from(path).is_file() {
+            return Err("The selected SSH private key no longer exists.".into());
+        }
+        command.arg("-i");
+        command.arg(path);
+        command.arg("-o");
+        command.arg("IdentitiesOnly=yes");
+    }
+    if let Some(path) = certificate_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        if !PathBuf::from(path).is_file() {
+            return Err("The selected SSH certificate no longer exists.".into());
+        }
+        command.arg("-o");
+        command.arg(format!("CertificateFile={path}"));
+    }
+    command.arg("-o");
+    command.arg(match authentication_mode.as_str() {
+        "identity" => "PreferredAuthentications=publickey",
+        "agent" => "PreferredAuthentications=publickey",
+        "password" => "PreferredAuthentications=password,keyboard-interactive",
+        _ => "PreferredAuthentications=publickey,password,keyboard-interactive",
+    });
     if allow_legacy_ssh_rsa {
         command.arg("-o");
         command.arg("HostKeyAlgorithms=+ssh-rsa");
@@ -281,6 +404,14 @@ pub fn create_ssh_terminal(
         command.arg("Ciphers=+aes128-cbc,aes192-cbc,aes256-cbc,3des-cbc");
     }
     command.arg(host);
+    if let Some(startup_command) = startup_command.filter(|value| !value.trim().is_empty()) {
+        if startup_command.len() > 4096 || startup_command.contains(['\0', '\r', '\n']) {
+            return Err(
+                "The startup command must be one line and no longer than 4096 characters.".into(),
+            );
+        }
+        command.arg(startup_command);
+    }
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
 
@@ -291,6 +422,14 @@ pub fn create_ssh_terminal(
             .map(crate::credentials::load_password)
             .transpose()?,
     };
+    if key_passphrase.as_deref().is_none_or(str::is_empty) {
+        key_passphrase = identity_id
+            .as_deref()
+            .map(crate::credentials::load_identity_passphrase)
+            .transpose()
+            .ok()
+            .flatten();
+    }
 
     start_terminal_session(
         session_id,
@@ -298,7 +437,9 @@ pub fn create_ssh_terminal(
         rows,
         command,
         "the SSH client (make sure OpenSSH is installed)",
-        password,
+        key_passphrase
+            .filter(|value| !value.is_empty())
+            .or(password),
         on_event,
         &manager,
     )
@@ -319,6 +460,11 @@ pub fn create_sftp_terminal(
     allow_legacy_ciphers: bool,
     password: Option<String>,
     credential_id: Option<String>,
+    authentication_mode: Option<String>,
+    private_key_path: Option<String>,
+    certificate_path: Option<String>,
+    mut key_passphrase: Option<String>,
+    identity_id: Option<String>,
     on_event: Channel<TerminalEvent>,
     manager: State<'_, LocalTerminalManager>,
 ) -> Result<(), String> {
@@ -352,6 +498,29 @@ pub fn create_sftp_terminal(
         command.arg("-o");
         command.arg("Ciphers=+aes128-cbc,aes192-cbc,aes256-cbc,3des-cbc");
     }
+    let authentication_mode = authentication_mode.unwrap_or_else(|| "auto".into());
+    if let Some(path) = private_key_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        command.arg("-i");
+        command.arg(path);
+        command.arg("-o");
+        command.arg("IdentitiesOnly=yes");
+    }
+    if let Some(path) = certificate_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        command.arg("-o");
+        command.arg(format!("CertificateFile={path}"));
+    }
+    command.arg("-o");
+    command.arg(match authentication_mode.as_str() {
+        "identity" | "agent" => "PreferredAuthentications=publickey",
+        "password" => "PreferredAuthentications=password,keyboard-interactive",
+        _ => "PreferredAuthentications=publickey,password,keyboard-interactive",
+    });
     command.arg(if username.is_empty() {
         host.to_string()
     } else {
@@ -366,6 +535,14 @@ pub fn create_sftp_terminal(
             .map(crate::credentials::load_password)
             .transpose()?,
     };
+    if key_passphrase.as_deref().is_none_or(str::is_empty) {
+        key_passphrase = identity_id
+            .as_deref()
+            .map(crate::credentials::load_identity_passphrase)
+            .transpose()
+            .ok()
+            .flatten();
+    }
 
     start_terminal_session(
         session_id,
@@ -373,7 +550,9 @@ pub fn create_sftp_terminal(
         rows,
         command,
         "the SFTP client (make sure OpenSSH is installed)",
-        password,
+        key_passphrase
+            .filter(|value| !value.is_empty())
+            .or(password),
         on_event,
         &manager,
     )

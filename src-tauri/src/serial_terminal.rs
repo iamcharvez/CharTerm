@@ -1,4 +1,5 @@
 use crate::local_terminal::TerminalEvent;
+use crate::terminal_transfer::{TransferEndpoint, TransferRoute};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -15,6 +16,7 @@ use tauri::{ipc::Channel, State};
 struct SerialSession {
     writer: Mutex<Box<dyn serialport::SerialPort>>,
     stopped: Arc<AtomicBool>,
+    transfer_route: Arc<TransferRoute>,
 }
 
 #[derive(Default)]
@@ -27,6 +29,11 @@ pub struct SerialTerminalManager {
 pub struct SerialPortInfo {
     name: String,
     kind: String,
+    product: Option<String>,
+    manufacturer: Option<String>,
+    serial_number: Option<String>,
+    vendor_id: Option<u16>,
+    product_id: Option<u16>,
 }
 
 fn lock_error() -> String {
@@ -40,15 +47,36 @@ pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
         .map(|ports| {
             ports
                 .into_iter()
-                .map(|port| SerialPortInfo {
-                    name: port.port_name,
-                    kind: match port.port_type {
-                        serialport::SerialPortType::UsbPort(_) => "USB",
-                        serialport::SerialPortType::BluetoothPort => "Bluetooth",
-                        serialport::SerialPortType::PciPort => "PCI",
-                        serialport::SerialPortType::Unknown => "Serial",
+                .map(|port| {
+                    let (kind, product, manufacturer, serial_number, vendor_id, product_id) =
+                        match port.port_type {
+                            serialport::SerialPortType::UsbPort(info) => (
+                                "USB",
+                                info.product,
+                                info.manufacturer,
+                                info.serial_number,
+                                Some(info.vid),
+                                Some(info.pid),
+                            ),
+                            serialport::SerialPortType::BluetoothPort => {
+                                ("Bluetooth", None, None, None, None, None)
+                            }
+                            serialport::SerialPortType::PciPort => {
+                                ("PCI", None, None, None, None, None)
+                            }
+                            serialport::SerialPortType::Unknown => {
+                                ("Serial", None, None, None, None, None)
+                            }
+                        };
+                    SerialPortInfo {
+                        name: port.port_name,
+                        kind: kind.into(),
+                        product,
+                        manufacturer,
+                        serial_number,
+                        vendor_id,
+                        product_id,
                     }
-                    .into(),
                 })
                 .collect()
         })
@@ -59,6 +87,10 @@ pub fn create_serial_terminal(
     session_id: String,
     port_name: String,
     baud_rate: u32,
+    data_bits: u8,
+    stop_bits: u8,
+    parity: String,
+    flow_control: String,
     on_event: Channel<TerminalEvent>,
     manager: State<'_, SerialTerminalManager>,
 ) -> Result<(), String> {
@@ -74,7 +106,36 @@ pub fn create_serial_terminal(
         return Err("A serial session with this identifier is already running.".into());
     }
 
+    let data_bits = match data_bits {
+        5 => serialport::DataBits::Five,
+        6 => serialport::DataBits::Six,
+        7 => serialport::DataBits::Seven,
+        8 => serialport::DataBits::Eight,
+        _ => return Err("Serial data bits must be 5, 6, 7, or 8.".into()),
+    };
+    let stop_bits = match stop_bits {
+        1 => serialport::StopBits::One,
+        2 => serialport::StopBits::Two,
+        _ => return Err("Serial stop bits must be 1 or 2.".into()),
+    };
+    let parity = match parity.as_str() {
+        "none" => serialport::Parity::None,
+        "odd" => serialport::Parity::Odd,
+        "even" => serialport::Parity::Even,
+        _ => return Err("Serial parity must be none, odd, or even.".into()),
+    };
+    let flow_control = match flow_control.as_str() {
+        "none" => serialport::FlowControl::None,
+        "hardware" => serialport::FlowControl::Hardware,
+        "software" => serialport::FlowControl::Software,
+        _ => return Err("Serial flow control must be none, hardware, or software.".into()),
+    };
+
     let port = serialport::new(port_name.trim(), baud_rate)
+        .data_bits(data_bits)
+        .stop_bits(stop_bits)
+        .parity(parity)
+        .flow_control(flow_control)
         .timeout(Duration::from_millis(100))
         .open()
         .map_err(|error| format!("Unable to open {}: {error}", port_name.trim()))?;
@@ -85,7 +146,9 @@ pub fn create_serial_terminal(
     let session = Arc::new(SerialSession {
         writer: Mutex::new(port),
         stopped: Arc::clone(&stopped),
+        transfer_route: Arc::new(TransferRoute::default()),
     });
+    let reader_transfer_route = Arc::clone(&session.transfer_route);
     sessions.insert(session_id.clone(), session);
     drop(sessions);
 
@@ -96,6 +159,9 @@ pub fn create_serial_terminal(
             match reader.read(&mut buffer) {
                 Ok(0) => continue,
                 Ok(length) => {
+                    if reader_transfer_route.capture(&buffer[..length]) {
+                        continue;
+                    }
                     if on_event
                         .send(TerminalEvent::Output {
                             data: buffer[..length].to_vec(),
@@ -121,6 +187,28 @@ pub fn create_serial_terminal(
     });
 
     Ok(())
+}
+
+impl SerialTerminalManager {
+    pub(crate) fn transfer_endpoint(&self, session_id: &str) -> Result<TransferEndpoint, String> {
+        let session = self
+            .sessions
+            .lock()
+            .map_err(|_| lock_error())?
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| "The serial session is no longer running.".to_string())?;
+        let route = Arc::clone(&session.transfer_route);
+        Ok(TransferEndpoint::new(route, move |bytes| {
+            let mut writer = session.writer.lock().map_err(|_| lock_error())?;
+            writer
+                .write_all(bytes)
+                .and_then(|_| writer.flush())
+                .map_err(|error| {
+                    format!("Unable to write transfer data to the serial port: {error}")
+                })
+        }))
+    }
 }
 
 #[tauri::command]

@@ -1,6 +1,6 @@
 # CharTerm installers
 
-CharTerm uses native GitHub Actions runners to build installation packages for Windows, Linux, and macOS. The workflow is defined in [`.github/workflows/release-installers.yml`](../.github/workflows/release-installers.yml).
+CharTerm uses native GitHub Actions runners to build installation packages for Windows, Linux, and macOS. The workflow is defined in [`.github/workflows/release.yml`](../.github/workflows/release.yml).
 
 ## Generated packages
 
@@ -19,8 +19,8 @@ Every workflow run uploads its packages as GitHub Actions artifacts and creates 
 3. Either run **Build desktop installers** from the repository's **Actions** page, or create and push a matching version tag:
 
    ```powershell
-   git tag v0.4.0
-   git push origin v0.4.0
+   git tag v0.8.7
+   git push origin v0.8.7
    ```
 
 4. Download the packages from the workflow's **Artifacts** section. For a tagged build, review the draft under **Releases**, attach release notes if needed, and publish it.
@@ -49,6 +49,10 @@ npm run bundle:macos
 Packages are written below `src-tauri/target/release/bundle/`, grouped by bundle type. A platform's installers must be created on that platform (or by the supplied native GitHub runner).
 
 ## Signing status
+
+The Tauri updater requires every update archive to have a valid signature. Before running the release workflow, add the contents of the private key at `C:\Users\HP\.charterm-release\updater.key` as the GitHub Actions repository secret `TAURI_SIGNING_PRIVATE_KEY`. The corresponding public key is already embedded in the application. The generated private key is outside this repository; back it up securely and never commit it. `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is optional for the currently generated unencrypted key and should be configured if the key is regenerated with a password.
+
+Publishing the draft release uploads `latest.json` and signed update artifacts. Installed copies then expose **Check for updates** on Settings → About and verify the archive before installation.
 
 The workflow creates unsigned Windows and Linux packages. macOS packages use Apple's ad-hoc signing identity so the application bundle is structurally signed, but it is not Developer ID signed or notarized. Operating systems can therefore display an unknown-publisher or security warning.
 

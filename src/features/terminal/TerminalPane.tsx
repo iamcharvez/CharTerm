@@ -2,36 +2,51 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Clipboard, Copy, RotateCcw } from "lucide-react";
+import { Clipboard, Copy, Power, Radio, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { loadPreferences } from "../../lib/preferences";
+import { recordActivity } from "../../lib/activityLog";
+import { removeNativeConnection, updateNativeConnection } from "../../lib/nativeCore";
 import { detectLegacyCompatibility } from "../../lib/sshCompatibility";
 import {
   useAppStore,
   type TerminalTab,
 } from "../../stores/useAppStore";
+import { TerminalTransferPanel } from "./TerminalTransferPanel";
 
 type TerminalEvent =
   | { event: "output"; data: number[] }
   | { event: "exit" }
   | { event: "error"; message: string };
 
-type TerminalPaneProps = { tab: TerminalTab; active: boolean };
+type TerminalPaneProps = {
+  tab: TerminalTab;
+  active: boolean;
+  pageActive: boolean;
+  layoutKey: string;
+};
 
 function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-export function TerminalPane({ tab, active }: TerminalPaneProps) {
+export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPaneProps) {
   const sessionId = tab.id;
+  const identity = useAppStore((state) =>
+    state.identities.find((item) => item.id === tab.connection?.identityId),
+  );
   const enableLegacyCompatibility = useAppStore(
     (state) => state.enableLegacyCompatibility,
   );
   const setSessionUsername = useAppStore((state) => state.setSessionUsername);
+  const closeTerminal = useAppStore((state) => state.closeTerminal);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const readyRef = useRef(false);
+  const transferActiveRef = useRef(false);
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [transferActive, setTransferActive] = useState(false);
   const [status, setStatus] = useState<
     "waiting" | "starting" | "active" | "closed" | "error"
   >("starting");
@@ -43,6 +58,7 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
 
     setStatus("starting");
     setError(null);
+    void updateNativeConnection(sessionId, tab.kind, `${tab.kind.toUpperCase()} session`, "starting");
 
     const preferences = loadPreferences();
     const terminal = new Terminal({
@@ -85,14 +101,16 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
     fitRef.current = fit;
 
     let disposed = false;
-    const awaitingUsername =
-      (tab.kind === "ssh" || tab.kind === "sftp") &&
-      !tab.connection?.username;
+    const awaitingUsername = tab.kind === "ssh" && !tab.connection?.username;
     let usernameBuffer = "";
     let legacyNegotiationFailed = false;
     let autoRetryScheduled = false;
     let outputTail = "";
     const inputSubscription = terminal.onData((data) => {
+      if (transferActiveRef.current) {
+        terminal.write("\x07");
+        return;
+      }
       if (awaitingUsername) {
         for (const character of data) {
           if (character === "\r" || character === "\n") {
@@ -124,6 +142,8 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
         ? "write_serial_terminal"
         : tab.kind === "telnet"
           ? "write_telnet_terminal"
+          : tab.kind === "tcp"
+            ? "write_tcp_terminal"
           : "write_local_terminal";
       void invoke(command, { sessionId, data }).catch(
         (reason) => {
@@ -136,8 +156,10 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
     const resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
         if (disposed) return;
+        const bounds = container.getBoundingClientRect();
+        if (bounds.width < 240 || bounds.height < 120) return;
         fit.fit();
-        if (readyRef.current && tab.kind !== "serial" && tab.kind !== "telnet") {
+        if (readyRef.current && !["serial", "telnet", "tcp"].includes(tab.kind)) {
           void invoke("resize_local_terminal", {
             sessionId,
             cols: terminal.cols,
@@ -166,10 +188,10 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
       onEvent.onmessage = (message) => {
         if (disposed) return;
         if (message.event === "output") {
-          const text = new TextDecoder().decode(Uint8Array.from(message.data));
+          const text = new TextDecoder(tab.connection?.serialEncoding ?? "utf-8").decode(Uint8Array.from(message.data));
           outputTail = `${outputTail}${text}`.slice(-1024);
           const detection =
-            tab.kind === "ssh" || tab.kind === "sftp"
+            tab.kind === "ssh"
               ? detectLegacyCompatibility(outputTail, tab.connection)
               : null;
           if (detection && !autoRetryScheduled) {
@@ -188,16 +210,22 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
                 }
               });
           }
-          terminal.write(Uint8Array.from(message.data));
+          if (tab.kind === "serial" && tab.connection?.serialEncoding && tab.connection.serialEncoding !== "utf-8") {
+            terminal.write(text);
+          } else {
+            terminal.write(Uint8Array.from(message.data));
+          }
         }
         if (message.event === "exit") {
           readyRef.current = false;
           if (!legacyNegotiationFailed) setStatus("closed");
+          void updateNativeConnection(sessionId, tab.kind, `${tab.kind.toUpperCase()} session`, "closed");
           terminal.writeln("\r\n\x1b[90m[Process exited]\x1b[0m");
         }
         if (message.event === "error") {
           setError(message.message);
           setStatus("error");
+          void updateNativeConnection(sessionId, tab.kind, `${tab.kind.toUpperCase()} session`, "error", message.message);
         }
       };
 
@@ -210,6 +238,8 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
             ? "create_sftp_terminal"
             : tab.kind === "telnet"
               ? "create_telnet_terminal"
+              : tab.kind === "tcp"
+                ? "create_tcp_terminal"
               : "create_serial_terminal";
       const createArguments = tab.kind === "local"
         ? { sessionId, cols: terminal.cols, rows: terminal.rows, workingDirectory: null, onEvent }
@@ -218,6 +248,10 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
               sessionId,
               portName: connection?.serialPort,
               baudRate: connection?.baudRate,
+              dataBits: connection?.serialDataBits ?? 8,
+              stopBits: connection?.serialStopBits ?? 1,
+              parity: connection?.serialParity ?? "none",
+              flowControl: connection?.serialFlowControl ?? "none",
               onEvent,
             }
           : {
@@ -237,23 +271,45 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
               credentialId: connection?.hasSavedPassword
                 ? connection.id
                 : null,
+              authenticationMode: connection?.authenticationMode ?? "auto",
+              privateKeyPath: identity?.privateKeyPath ?? null,
+              certificatePath: identity?.certificatePath ?? null,
+              keyPassphrase: tab.sessionKeyPassphrase ?? null,
+              identityId: identity?.hasSavedPassphrase ? identity.id : null,
+              jumpHost: connection?.jumpHost ?? null,
+              jumpPort: connection?.jumpPort ?? null,
+              jumpUsername: connection?.jumpUsername ?? null,
+              startupCommand: connection?.startupCommand ?? null,
+              enableCompression: connection?.enableCompression ?? false,
+              agentForwarding: connection?.agentForwarding ?? false,
+              localForward: connection?.localForward ?? null,
+              remoteForward: connection?.remoteForward ?? null,
+              dynamicForward: connection?.dynamicForward ?? null,
               onEvent,
             };
 
       void invoke(createCommand, createArguments)
         .then(() => {
           if (disposed) {
-            void invoke(tab.kind === "serial" ? "close_serial_terminal" : tab.kind === "telnet" ? "close_telnet_terminal" : "close_local_terminal", { sessionId });
+            void invoke(tab.kind === "serial" ? "close_serial_terminal" : tab.kind === "telnet" ? "close_telnet_terminal" : tab.kind === "tcp" ? "close_tcp_terminal" : "close_local_terminal", { sessionId });
             return;
           }
           readyRef.current = true;
           setStatus("active");
+          void recordActivity("info", "connection", "Terminal session connected", {
+            protocol: tab.kind,
+          });
+          void updateNativeConnection(sessionId, tab.kind, `${tab.kind.toUpperCase()} session`, "active");
           terminal.focus();
         })
         .catch((reason) => {
           const message = String(reason);
           setError(message);
           setStatus("error");
+          void recordActivity("error", "connection", "Terminal session failed", {
+            protocol: tab.kind,
+          });
+          void updateNativeConnection(sessionId, tab.kind, `${tab.kind.toUpperCase()} session`, "error", message);
           terminal.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
         });
     }
@@ -267,17 +323,56 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
       terminalRef.current = null;
       fitRef.current = null;
       if (isTauriRuntime())
-        void invoke(tab.kind === "serial" ? "close_serial_terminal" : tab.kind === "telnet" ? "close_telnet_terminal" : "close_local_terminal", { sessionId });
+        void invoke(tab.kind === "serial" ? "close_serial_terminal" : tab.kind === "telnet" ? "close_telnet_terminal" : tab.kind === "tcp" ? "close_tcp_terminal" : "close_local_terminal", { sessionId });
+      void removeNativeConnection(sessionId);
     };
-  }, [sessionId, tab.connection, tab.kind]);
+  }, [sessionId, tab.connection, tab.kind, tab.sessionKeyPassphrase, identity]);
 
   useEffect(() => {
-    if (!active) return;
-    requestAnimationFrame(() => {
-      fitRef.current?.fit();
-      terminalRef.current?.focus();
+    if (!active || !pageActive) {
+      terminalRef.current?.blur();
+      return;
+    }
+    let cancelled = false;
+    let secondFrame = 0;
+    let delayedFit = 0;
+    const restoreTerminal = () => {
+      if (cancelled) return;
+      const container = containerRef.current;
+      const fit = fitRef.current;
+      const terminal = terminalRef.current;
+      if (!container || !fit || !terminal) return;
+      const bounds = container.getBoundingClientRect();
+      if (bounds.width < 240 || bounds.height < 120) return;
+
+      fit.fit();
+      terminal.refresh(0, Math.max(0, terminal.rows - 1));
+      if (readyRef.current && !["serial", "telnet", "tcp"].includes(tab.kind)) {
+        void invoke("resize_local_terminal", {
+          sessionId,
+          cols: terminal.cols,
+          rows: terminal.rows,
+        }).catch(() => undefined);
+      }
+      terminal.focus();
+    };
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        restoreTerminal();
+        delayedFit = window.setTimeout(restoreTerminal, 120);
+      });
     });
-  }, [active]);
+    const restoreOnWindowFocus = () => restoreTerminal();
+    window.addEventListener("focus", restoreOnWindowFocus);
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame) cancelAnimationFrame(secondFrame);
+      if (delayedFit) window.clearTimeout(delayedFit);
+      window.removeEventListener("focus", restoreOnWindowFocus);
+    };
+  }, [active, pageActive, layoutKey, sessionId, tab.kind]);
 
   const copySelection = async () => {
     const selection = terminalRef.current?.getSelection();
@@ -285,15 +380,16 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
   };
 
   const pasteClipboard = async () => {
+    if (transferActiveRef.current) return;
     const text = await navigator.clipboard.readText();
     if (readyRef.current)
-      await invoke(tab.kind === "serial" ? "write_serial_terminal" : tab.kind === "telnet" ? "write_telnet_terminal" : "write_local_terminal", { sessionId, data: text });
+      await invoke(tab.kind === "serial" ? "write_serial_terminal" : tab.kind === "telnet" ? "write_telnet_terminal" : tab.kind === "tcp" ? "write_tcp_terminal" : "write_local_terminal", { sessionId, data: text });
   };
 
   return (
     <section
       className={`terminal-pane ${active ? "active" : ""}`}
-      aria-hidden={!active}
+      aria-hidden={!active || !pageActive}
     >
       <div className="terminal-toolbar">
         <div className={`terminal-connection-state ${status}`}>
@@ -301,6 +397,16 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
           {status}
         </div>
         <div>
+          <button
+            className={transferActive ? "transfer-running" : ""}
+            type="button"
+            onClick={() => setShowTransfer(true)}
+            title="Open XMODEM, YMODEM, ZMODEM, and Kermit transfer"
+            disabled={!readyRef.current || ["telnet", "sftp"].includes(tab.kind)}
+          >
+            <Radio size={15} /> X/Y/Z Transfer
+            {transferActive && <span className="transfer-live-dot" />}
+          </button>
           <button
             type="button"
             onClick={() => void copySelection()}
@@ -325,6 +431,14 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
           >
             <RotateCcw size={15} /> Clear
           </button>
+          <button
+            className="terminal-disconnect"
+            type="button"
+            onClick={() => closeTerminal(sessionId)}
+            title="Disconnect and close this session"
+          >
+            <Power size={15} /> Disconnect
+          </button>
         </div>
       </div>
       {error && (
@@ -332,7 +446,25 @@ export function TerminalPane({ tab, active }: TerminalPaneProps) {
           <span>{error}</span>
         </div>
       )}
-      <div className="xterm-host" ref={containerRef} />
+      <div
+        className="xterm-host"
+        ref={containerRef}
+        onPointerDown={() => {
+          window.requestAnimationFrame(() => terminalRef.current?.focus());
+        }}
+      />
+      <TerminalTransferPanel
+        sessionId={sessionId}
+        sessionKind={tab.kind}
+        ready={status === "active"}
+        open={showTransfer}
+        onClose={() => setShowTransfer(false)}
+        onActiveChange={(nextActive) => {
+          transferActiveRef.current = nextActive;
+          setTransferActive(nextActive);
+          if (!nextActive) terminalRef.current?.focus();
+        }}
+      />
     </section>
   );
 }

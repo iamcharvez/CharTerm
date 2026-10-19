@@ -6,6 +6,7 @@ import {
   Code2,
   Command,
   Feather,
+  Download,
   Globe2,
   Laptop,
   Menu,
@@ -15,6 +16,7 @@ import {
   Wifi,
   Zap,
 } from "lucide-react";
+import { useState } from "react";
 import { CharTermLogo } from "../../components/CharTermLogo";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { useAppMetadata } from "../../hooks/useAppMetadata";
@@ -78,6 +80,7 @@ export function AboutPage({ theme, onThemeToggle, onMenuOpen }: AboutPageProps) 
             <div className="hero-meta">
               <span className="version-pill"><span className="pulse-dot" /> Version {metadata.version}</span>
               <span className="platform-pill"><Globe2 size={15} /> Cross-platform</span>
+              <UpdateControl />
             </div>
           </div>
 
@@ -190,6 +193,56 @@ export function AboutPage({ theme, onThemeToggle, onMenuOpen }: AboutPageProps) 
         </footer>
       </div>
     </main>
+  );
+}
+
+function UpdateControl() {
+  const desktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  const [state, setState] = useState<"idle" | "checking" | "current" | "available" | "downloading" | "ready" | "error">("idle");
+  const [message, setMessage] = useState("");
+  if (!desktop) return null;
+
+  const checkForUpdates = async () => {
+    setState("checking");
+    setMessage("");
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (!update) {
+        setState("current");
+        setMessage("You have the latest version.");
+        return;
+      }
+      setState("available");
+      setMessage(`Version ${update.version} is available.`);
+      setState("downloading");
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Finished") setState("ready");
+      });
+      setState("ready");
+      setMessage(`Version ${update.version} is installed and ready to restart.`);
+    } catch (reason) {
+      setState("error");
+      setMessage(String(reason));
+    }
+  };
+
+  const restart = async () => {
+    const { relaunch } = await import("@tauri-apps/plugin-process");
+    await relaunch();
+  };
+
+  return (
+    <div className="update-control">
+      {state === "ready" ? (
+        <button type="button" onClick={() => void restart()}><Download size={14} /> Restart to update</button>
+      ) : (
+        <button type="button" disabled={state === "checking" || state === "downloading"} onClick={() => void checkForUpdates()}>
+          <Download size={14} /> {state === "checking" ? "Checking…" : state === "downloading" ? "Installing…" : "Check for updates"}
+        </button>
+      )}
+      {message && <span className={state === "error" ? "error" : ""}>{message}</span>}
+    </div>
   );
 }
 

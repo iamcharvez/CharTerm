@@ -10,7 +10,6 @@ import {
 import { useAppStore } from "../../stores/useAppStore";
 
 export function DashboardPage() {
-  const openLocalTerminal = useAppStore((state) => state.openLocalTerminal);
   const navigate = useAppStore((state) => state.navigate);
 
   return (
@@ -19,7 +18,7 @@ export function DashboardPage() {
         <div>
           <span>Welcome to CharTerm</span>
           <h1>Connection workspace</h1>
-          <p>Connect to a server, network device, serial console, or local shell.</p>
+          <p>Connect to servers, network devices, serial consoles, and custom TCP services.</p>
         </div>
         <div className="local-ready-badge">
           <ShieldCheck size={16} /> Local-first workspace
@@ -31,8 +30,8 @@ export function DashboardPage() {
           <span className="section-kicker">Every connection, one workspace</span>
           <h2>Connect without typing commands.</h2>
           <p>
-            Use a friendly form for SSH, SFTP, Telnet, and Serial, then work
-            inside CharTerm's tabbed terminal.
+            Use a friendly form for SSH, SFTP, Telnet, Serial, and custom TCP
+            ports, then work inside CharTerm's tabbed workspace.
           </p>
           <button
             className="primary-action"
@@ -55,8 +54,8 @@ export function DashboardPage() {
             <TerminalSquare size={21} />
           </span>
           <div>
-            <strong>Local Terminal</strong>
-            <span>Interactive PTY sessions</span>
+            <strong>Terminal Sessions</strong>
+            <span>All active connections in one place</span>
           </div>
           <span className="feature-ready">Built in</span>
         </button>
@@ -66,7 +65,7 @@ export function DashboardPage() {
           </span>
           <div>
             <strong>Quick Connect</strong>
-            <span>SSH, SFTP, Telnet, and Serial</span>
+            <span>SSH, SFTP, Telnet, Serial, and Other TCP</span>
           </div>
           <span className="feature-ready">Ready</span>
         </button>

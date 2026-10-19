@@ -1,6 +1,6 @@
 [package]
 name = "charterm"
-version = "0.4.0"
+version = "0.8.7"
 description = "One Terminal. Every Connection."
 authors = ["Charlie M. Chavez"]
 license-file = "../LICENSE.md"
@@ -17,9 +17,29 @@ tauri-build = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2.5.2"
+tauri-plugin-updater = "2.14.0"
+tauri-plugin-process = "2.4.0"
 portable-pty = "0.9"
 serialport = { version = "4", default-features = false }
 keyring = "4.2"
 zeroize = "1"
 quick-xml = "0.38"
+base64 = "0.22"
+ssh-key = { version = "0.6.7", features = ["ed25519", "rsa", "encryption", "getrandom"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+zmodem2 = { version = "0.7.3", features = ["std"] }
+kermit-proto = "0.5.0"
+
+[target.'cfg(windows)'.dependencies]
+ssh2 = "0.9.6"
+
+[target.'cfg(not(windows))'.dependencies]
+ssh2 = { version = "0.9.6", features = ["vendored-openssl"] }
+
+[patch.crates-io]
+# zip 4.6.1 is the version required by Tauri's stable Windows updater. It was
+# yanked after newer majors shipped, so pin its immutable upstream revision.
+zip = { git = "https://github.com/zip-rs/zip2.git", rev = "cbbd76fa0c2406437825ab3e94b5a054ff24a8c3" }
 

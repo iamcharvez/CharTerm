@@ -15,6 +15,7 @@ describe("SettingsSidebar", () => {
       "Security",
       "Notifications",
       "Accessibility",
+      "Activity Logs",
       "About",
     ]) {
       const button = screen.getByRole("button", { name: label });
@@ -31,6 +32,7 @@ describe("SettingsSidebar", () => {
       "security",
       "notifications",
       "accessibility",
+      "logs",
       "about",
     ]);
   });

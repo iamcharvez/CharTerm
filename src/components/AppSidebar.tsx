@@ -5,6 +5,10 @@ import {
   Gauge,
   Menu,
   Network,
+  PanelsTopLeft,
+  PanelLeftClose,
+  PanelLeftOpen,
+  KeyRound,
   Plus,
   Radar,
   Settings,
@@ -27,6 +31,8 @@ const items: Array<{
   { id: "recent", label: "Recent Sessions", icon: Clock3 },
   { id: "network-scanner", label: "Network Scanner", icon: Radar },
   { id: "ip-calculator", label: "IP Calculator", icon: Calculator },
+  { id: "identities", label: "SSH Identities", icon: KeyRound },
+  { id: "workspaces", label: "Workspaces", icon: PanelsTopLeft },
   {
     id: "local-terminal",
     label: "Terminal Sessions",
@@ -35,16 +41,21 @@ const items: Array<{
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
-type AppSidebarProps = { open: boolean; onOpenChange: (open: boolean) => void };
+type AppSidebarProps = {
+  open: boolean;
+  collapsed: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCollapsedChange: (collapsed: boolean) => void;
+};
 
-export function AppSidebar({ open, onOpenChange }: AppSidebarProps) {
+export function AppSidebar({ open, collapsed, onOpenChange, onCollapsedChange }: AppSidebarProps) {
   const page = useAppStore((state) => state.page);
   const navigate = useAppStore((state) => state.navigate);
 
   return (
     <>
       <aside
-        className={`app-sidebar ${open ? "open" : ""}`}
+        className={`app-sidebar ${open ? "open" : ""} ${collapsed ? "collapsed" : ""}`}
         aria-label="Main navigation"
       >
         <div className="app-brand">
@@ -61,6 +72,15 @@ export function AppSidebar({ open, onOpenChange }: AppSidebarProps) {
           >
             <X size={18} />
           </button>
+          <button
+            className="icon-button app-sidebar-collapse"
+            type="button"
+            onClick={() => onCollapsedChange(!collapsed)}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+          </button>
         </div>
 
         <button
@@ -71,7 +91,7 @@ export function AppSidebar({ open, onOpenChange }: AppSidebarProps) {
             onOpenChange(false);
           }}
         >
-          <Plus size={17} /> New connection
+          <Plus size={17} /> <span>New connection</span>
         </button>
 
         <nav className="app-nav">
@@ -81,6 +101,7 @@ export function AppSidebar({ open, onOpenChange }: AppSidebarProps) {
               type="button"
               key={id}
               aria-current={page === id ? "page" : undefined}
+              title={collapsed ? label : undefined}
               onClick={() => {
                 navigate(id);
                 onOpenChange(false);
@@ -94,7 +115,7 @@ export function AppSidebar({ open, onOpenChange }: AppSidebarProps) {
 
         <div className="app-sidebar-footer">
           <span className="online-dot" />
-          <span>Local mode</span>
+          <span>Ready</span>
         </div>
       </aside>
       {open && (

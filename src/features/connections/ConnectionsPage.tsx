@@ -56,6 +56,7 @@ export function ConnectionsPage({ mode }: ConnectionsPageProps) {
   const recentIds = useAppStore((state) => state.recentProfileIds);
   const navigate = useAppStore((state) => state.navigate);
   const openConnection = useAppStore((state) => state.openConnection);
+  const editConnection = useAppStore((state) => state.editConnection);
   const deleteProfile = useAppStore((state) => state.deleteProfile);
   const duplicateProfile = useAppStore((state) => state.duplicateProfile);
   const toggleFavorite = useAppStore((state) => state.toggleFavorite);
@@ -450,6 +451,14 @@ export function ConnectionsPage({ mode }: ConnectionsPageProps) {
                       onClick={() => openConnection(profile)}
                     >
                       <Wifi size={16} /> Connect
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => editConnection(profile.id)}
+                      title="Edit connection"
+                      aria-label={`Edit ${profile.name}`}
+                    >
+                      <Pencil size={16} />
                     </button>
                     <button
                       type="button"

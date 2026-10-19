@@ -10,6 +10,7 @@ import {
   MonitorCog,
   Network,
   Palette,
+  ScrollText,
   Settings2,
 } from "lucide-react";
 import { CharTermLogo } from "./CharTermLogo";
@@ -31,6 +32,7 @@ const groups = [
       { id: "security", label: "Security", icon: LockKeyhole },
       { id: "notifications", label: "Notifications", icon: Bell },
       { id: "accessibility", label: "Accessibility", icon: Accessibility },
+      { id: "logs", label: "Activity Logs", icon: ScrollText },
       { id: "about", label: "About", icon: Info },
     ],
   },

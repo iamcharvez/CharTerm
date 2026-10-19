@@ -1,7 +1,7 @@
 use quick_xml::{events::Event, Reader};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs},
     process::{Child, Command, Stdio},
@@ -11,9 +11,23 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{ipc::Channel, State};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn configure_background_command(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = command;
+}
 
 #[derive(Default)]
 pub struct NetworkScanManager {
@@ -52,6 +66,8 @@ pub struct ScanPort {
 pub struct ScanHost {
     address: String,
     hostname: Option<String>,
+    mac_address: Option<String>,
+    vendor: Option<String>,
     ports: Vec<ScanPort>,
 }
 
@@ -64,6 +80,9 @@ pub enum ScanEvent {
     Progress {
         completed: usize,
         total: usize,
+    },
+    Host {
+        host: ScanHost,
     },
     Complete {
         hosts: Vec<ScanHost>,
@@ -83,7 +102,10 @@ pub struct ScannerStatus {
 }
 
 fn nmap_version() -> Option<String> {
-    let output = Command::new("nmap").arg("--version").output().ok()?;
+    let mut command = Command::new("nmap");
+    command.arg("--version");
+    configure_background_command(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -124,6 +146,101 @@ fn validate_target(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
+fn split_target_entries(value: &str) -> Vec<&str> {
+    value
+        .split(|character: char| character == ',' || character == ';' || character.is_whitespace())
+        .filter(|value| !value.trim().is_empty())
+        .collect()
+}
+
+fn normalize_ipv4_cidr(value: &str) -> Result<Option<String>, String> {
+    let Some((address, prefix)) = value.split_once('/') else {
+        return Ok(None);
+    };
+    if address.contains(':') {
+        return Err(
+            "IPv6 CIDR ranges are not supported yet. Enter a single IPv6 address instead.".into(),
+        );
+    }
+    let address =
+        Ipv4Addr::from_str(address).map_err(|_| format!("Invalid IPv4 CIDR address: {value}."))?;
+    let prefix = prefix
+        .parse::<u8>()
+        .map_err(|_| format!("Invalid CIDR prefix in {value}. Use /0 through /32."))?;
+    if prefix > 32 {
+        return Err(format!(
+            "Invalid CIDR prefix in {value}. IPv4 prefixes must be /0 through /32."
+        ));
+    }
+    let host_bits = 32 - prefix;
+    let mask = u32::MAX.checked_shl(host_bits.into()).unwrap_or(0);
+    let network = Ipv4Addr::from(u32::from(address) & mask);
+    Ok(Some(format!("{network}/{prefix}")))
+}
+
+fn parse_ipv4_range(value: &str) -> Result<Option<(Ipv4Addr, Ipv4Addr)>, String> {
+    let Some((start, end)) = value.split_once('-') else {
+        return Ok(None);
+    };
+    let Ok(start) = Ipv4Addr::from_str(start) else {
+        return Ok(None);
+    };
+    let end = if end.contains('.') {
+        Ipv4Addr::from_str(end)
+            .map_err(|_| format!("Invalid ending IPv4 address in range {value}."))?
+    } else {
+        let last_octet = end.parse::<u8>().map_err(|_| {
+            format!("Invalid final octet in range {value}. Use a value from 0 to 255.")
+        })?;
+        let octets = start.octets();
+        Ipv4Addr::new(octets[0], octets[1], octets[2], last_octet)
+    };
+    if u32::from(start) > u32::from(end) {
+        return Err(format!(
+            "Range {value} is reversed. The ending address must be greater than or equal to the starting address."
+        ));
+    }
+    let count = u64::from(u32::from(end)) - u64::from(u32::from(start)) + 1;
+    if count > 4096 {
+        return Err(format!(
+            "Range {value} contains {count} addresses. A single range is limited to 4,096 addresses."
+        ));
+    }
+    Ok(Some((start, end)))
+}
+
+fn normalize_target(value: &str) -> Result<String, String> {
+    let value = validate_target(value)?;
+    if let Some(cidr) = normalize_ipv4_cidr(&value)? {
+        return Ok(cidr);
+    }
+    if let Some((start, end)) = parse_ipv4_range(&value)? {
+        return Ok(format!("{start}-{end}"));
+    }
+    Ok(value)
+}
+
+fn parse_targets(value: &str) -> Result<Vec<String>, String> {
+    let mut targets = Vec::new();
+    let compact_ranges = value
+        .replace(" - ", "-")
+        .replace("- ", "-")
+        .replace(" -", "-");
+    for value in split_target_entries(&compact_ranges) {
+        let target = normalize_target(value)?;
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    if targets.is_empty() {
+        return Err("Enter at least one IP address, hostname, or IPv4 CIDR range.".into());
+    }
+    if targets.len() > 32 {
+        return Err("A single scan can include up to 32 target entries.".into());
+    }
+    Ok(targets)
+}
+
 fn parse_ports(value: &str) -> Result<Vec<u16>, String> {
     let mut ports = Vec::new();
     for part in value
@@ -158,6 +275,11 @@ fn parse_ports(value: &str) -> Result<Vec<u16>, String> {
 }
 
 fn target_addresses(target: &str) -> Result<Vec<IpAddr>, String> {
+    if let Some((start, end)) = parse_ipv4_range(target)? {
+        return Ok((u32::from(start)..=u32::from(end))
+            .map(|address| IpAddr::V4(Ipv4Addr::from(address)))
+            .collect());
+    }
     if let Some((address, prefix)) = target.split_once('/') {
         let ip = Ipv4Addr::from_str(address).map_err(|_| "Only IPv4 CIDR ranges are supported.")?;
         let prefix = prefix.parse::<u8>().map_err(|_| "Invalid CIDR prefix.")?;
@@ -187,6 +309,144 @@ fn target_addresses(target: &str) -> Result<Vec<IpAddr>, String> {
     }
 }
 
+fn ipv4_range_to_cidrs(start: Ipv4Addr, end: Ipv4Addr) -> Vec<String> {
+    let mut current = u32::from(start) as u64;
+    let end = u32::from(end) as u64;
+    let mut cidrs = Vec::new();
+    while current <= end {
+        let alignment_bits = if current == 0 {
+            32
+        } else {
+            (current as u32).trailing_zeros()
+        };
+        let remaining = end - current + 1;
+        let remaining_bits = 63 - remaining.leading_zeros();
+        let host_bits = alignment_bits.min(remaining_bits).min(32);
+        cidrs.push(format!(
+            "{}/{}",
+            Ipv4Addr::from(current as u32),
+            32 - host_bits
+        ));
+        current += 1_u64 << host_bits;
+    }
+    cidrs
+}
+
+fn normalize_mac(value: &str) -> Option<String> {
+    let compact: String = value
+        .chars()
+        .filter(|character| character.is_ascii_hexdigit())
+        .collect();
+    if compact.len() != 12
+        || !value
+            .chars()
+            .any(|character| character == ':' || character == '-')
+    {
+        return None;
+    }
+    Some(
+        compact
+            .as_bytes()
+            .chunks(2)
+            .map(|chunk| String::from_utf8_lossy(chunk).to_ascii_uppercase())
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
+}
+
+fn parse_neighbor_table(output: &str, macs: &mut HashMap<IpAddr, String>) {
+    for line in output.lines() {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        let Some(address) = columns
+            .iter()
+            .find_map(|value| value.parse::<IpAddr>().ok())
+        else {
+            continue;
+        };
+        if let Some(mac) = columns.iter().find_map(|value| normalize_mac(value)) {
+            macs.insert(address, mac);
+        }
+    }
+}
+
+fn refresh_neighbor_cache(addresses: &[IpAddr]) {
+    let addresses: Vec<IpAddr> = addresses.iter().copied().filter(IpAddr::is_ipv4).collect();
+    let jobs = Arc::new(addresses);
+    let next = Arc::new(AtomicUsize::new(0));
+    let workers = jobs.len().min(32);
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            let jobs = Arc::clone(&jobs);
+            let next = Arc::clone(&next);
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(address) = jobs.get(index) else {
+                    break;
+                };
+                #[cfg(target_os = "windows")]
+                {
+                    let mut command = Command::new("ping");
+                    command
+                        .args(["-n", "1", "-w", "300", &address.to_string()])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null());
+                    configure_background_command(&mut command);
+                    let _ = command.status();
+                }
+                #[cfg(not(target_os = "windows"))]
+                let _ = Command::new("ping")
+                    .args(["-c", "1", "-W", "1", &address.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            });
+        }
+    });
+}
+
+fn collect_mac_addresses() -> HashMap<IpAddr, String> {
+    let mut macs = HashMap::new();
+    #[cfg(target_os = "windows")]
+    {
+        let mut arp = Command::new("arp");
+        arp.arg("-a");
+        configure_background_command(&mut arp);
+        if let Ok(output) = arp.output() {
+            parse_neighbor_table(&String::from_utf8_lossy(&output.stdout), &mut macs);
+        }
+        const LOCAL_ADAPTER_SCRIPT: &str = "Get-NetIPConfiguration | ForEach-Object { $mac = $_.NetAdapter.MacAddress; $_.IPv4Address | ForEach-Object { Write-Output ($_.IPAddress + '|' + $mac) } }";
+        let mut powershell = Command::new("powershell.exe");
+        powershell.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            LOCAL_ADAPTER_SCRIPT,
+        ]);
+        configure_background_command(&mut powershell);
+        if let Ok(output) = powershell.output() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let Some((address, mac)) = line.trim().split_once('|') else {
+                    continue;
+                };
+                if let (Ok(address), Some(mac)) = (address.parse::<IpAddr>(), normalize_mac(mac)) {
+                    macs.insert(address, mac);
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(output) = Command::new("ip").args(["neigh", "show"]).output() {
+            parse_neighbor_table(&String::from_utf8_lossy(&output.stdout), &mut macs);
+        } else if let Ok(output) = Command::new("arp").arg("-an").output() {
+            parse_neighbor_table(&String::from_utf8_lossy(&output.stdout), &mut macs);
+        }
+    }
+    macs
+}
+
 fn service_name(port: u16) -> &'static str {
     match port {
         20 | 21 => "ftp",
@@ -195,7 +455,7 @@ fn service_name(port: u16) -> &'static str {
         25 | 465 | 587 => "smtp",
         53 => "dns",
         67 | 68 => "dhcp",
-        80 | 8080 | 8000 => "http",
+        80 | 81 | 3000 | 5000 | 7001 | 8000 | 8008 | 8080 | 8081 | 8888 | 9000 | 9090 => "http",
         110 | 995 => "pop3",
         123 => "ntp",
         135 => "msrpc",
@@ -203,7 +463,7 @@ fn service_name(port: u16) -> &'static str {
         143 | 993 => "imap",
         161 | 162 => "snmp",
         389 | 636 => "ldap",
-        443 | 8443 => "https",
+        443 | 8443 | 9443 => "https",
         1433 => "mssql",
         1521 => "oracle",
         3306 => "mysql",
@@ -220,9 +480,24 @@ fn run_builtin_scan(
     handle: Arc<ScanHandle>,
     on_event: Channel<ScanEvent>,
 ) -> Result<Vec<ScanHost>, String> {
-    let target = validate_target(&request.target)?;
-    let addresses = target_addresses(&target)?;
+    let targets = parse_targets(&request.target)?;
+    let mut unique_addresses = HashSet::new();
+    for target in &targets {
+        for address in target_addresses(target)? {
+            unique_addresses.insert(address);
+            if unique_addresses.len() > 4096 {
+                return Err("Multi-target scans are limited to 4,096 unique addresses.".into());
+            }
+        }
+    }
+    let mut addresses: Vec<IpAddr> = unique_addresses.into_iter().collect();
+    addresses.sort_unstable();
     let ports = parse_ports(&request.ports)?;
+    if addresses.len().saturating_mul(ports.len()) > 2_000_000 {
+        return Err(
+            "This scan is too large. Reduce the number of subnets or selected ports.".into(),
+        );
+    }
     let jobs: Vec<(IpAddr, u16)> = addresses
         .iter()
         .flat_map(|address| ports.iter().map(move |port| (*address, *port)))
@@ -232,8 +507,8 @@ fn run_builtin_scan(
     let next = Arc::new(AtomicUsize::new(0));
     let completed = Arc::new(AtomicUsize::new(0));
     let open = Arc::new(Mutex::new(HashMap::<IpAddr, Vec<u16>>::new()));
-    let timeout = Duration::from_millis(request.timeout_ms.clamp(50, 5_000));
-    let workers = request.concurrency.clamp(1, 256).min(total.max(1));
+    let timeout = Duration::from_millis(request.timeout_ms.clamp(50, 10_000));
+    let workers = request.concurrency.clamp(1, 512).min(total.max(1));
 
     thread::scope(|scope| {
         for _ in 0..workers {
@@ -252,8 +527,30 @@ fn run_builtin_scan(
                     break;
                 };
                 if TcpStream::connect_timeout(&SocketAddr::new(address, port), timeout).is_ok() {
-                    if let Ok(mut results) = open.lock() {
-                        results.entry(address).or_default().push(port);
+                    let host = open.lock().ok().map(|mut results| {
+                        let found_ports = results.entry(address).or_default();
+                        found_ports.push(port);
+                        found_ports.sort_unstable();
+                        found_ports.dedup();
+                        ScanHost {
+                            address: address.to_string(),
+                            hostname: None,
+                            mac_address: None,
+                            vendor: None,
+                            ports: found_ports
+                                .iter()
+                                .copied()
+                                .map(|port| ScanPort {
+                                    port,
+                                    protocol: "tcp".into(),
+                                    service: service_name(port).into(),
+                                    product: None,
+                                })
+                                .collect(),
+                        }
+                    });
+                    if let Some(host) = host {
+                        let _ = on_event.send(ScanEvent::Host { host });
                     }
                 }
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -270,9 +567,14 @@ fn run_builtin_scan(
     if handle.cancelled.load(Ordering::Relaxed) {
         return Err("__cancelled__".into());
     }
-    let mut hosts: Vec<ScanHost> = open
+    let open = open
         .lock()
         .map_err(|_| "Unable to collect scan results.".to_string())?
+        .clone();
+    let discovered_addresses: Vec<IpAddr> = open.keys().copied().collect();
+    refresh_neighbor_cache(&discovered_addresses);
+    let macs = collect_mac_addresses();
+    let mut hosts: Vec<ScanHost> = open
         .iter()
         .map(|(address, ports)| {
             let mut ports = ports.clone();
@@ -280,6 +582,8 @@ fn run_builtin_scan(
             ScanHost {
                 address: address.to_string(),
                 hostname: None,
+                mac_address: macs.get(address).cloned(),
+                vendor: None,
                 ports: ports
                     .into_iter()
                     .map(|port| ScanPort {
@@ -315,13 +619,22 @@ fn parse_nmap_xml(xml: &str) -> Result<Vec<ScanHost>, String> {
                     host = Some(ScanHost {
                         address: String::new(),
                         hostname: None,
+                        mac_address: None,
+                        vendor: None,
                         ports: Vec::new(),
                     })
                 }
                 b"address" => {
-                    if attr_value(&event, b"addrtype").as_deref() == Some("ipv4") {
-                        if let Some(current) = host.as_mut() {
-                            current.address = attr_value(&event, b"addr").unwrap_or_default();
+                    if let Some(current) = host.as_mut() {
+                        match attr_value(&event, b"addrtype").as_deref() {
+                            Some("ipv4") | Some("ipv6") if current.address.is_empty() => {
+                                current.address = attr_value(&event, b"addr").unwrap_or_default();
+                            }
+                            Some("mac") => {
+                                current.mac_address = attr_value(&event, b"addr");
+                                current.vendor = attr_value(&event, b"vendor");
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -351,9 +664,16 @@ fn parse_nmap_xml(xml: &str) -> Result<Vec<ScanHost>, String> {
             },
             Ok(Event::Empty(event)) => match event.name().as_ref() {
                 b"address" => {
-                    if attr_value(&event, b"addrtype").as_deref() == Some("ipv4") {
-                        if let Some(current) = host.as_mut() {
-                            current.address = attr_value(&event, b"addr").unwrap_or_default();
+                    if let Some(current) = host.as_mut() {
+                        match attr_value(&event, b"addrtype").as_deref() {
+                            Some("ipv4") | Some("ipv6") if current.address.is_empty() => {
+                                current.address = attr_value(&event, b"addr").unwrap_or_default();
+                            }
+                            Some("mac") => {
+                                current.mac_address = attr_value(&event, b"addr");
+                                current.vendor = attr_value(&event, b"vendor");
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -398,8 +718,20 @@ fn parse_nmap_xml(xml: &str) -> Result<Vec<ScanHost>, String> {
     Ok(hosts)
 }
 
-fn run_nmap_scan(request: &ScanRequest, handle: Arc<ScanHandle>) -> Result<Vec<ScanHost>, String> {
-    let target = validate_target(&request.target)?;
+fn run_nmap_scan(
+    request: &ScanRequest,
+    handle: Arc<ScanHandle>,
+    on_event: Channel<ScanEvent>,
+) -> Result<Vec<ScanHost>, String> {
+    let targets = parse_targets(&request.target)?;
+    let mut nmap_targets = Vec::new();
+    for target in targets {
+        if let Some((start, end)) = parse_ipv4_range(&target)? {
+            nmap_targets.extend(ipv4_range_to_cidrs(start, end));
+        } else {
+            nmap_targets.push(target);
+        }
+    }
     if request.ports.len() > 512
         || !request
             .ports
@@ -420,9 +752,10 @@ fn run_nmap_scan(request: &ScanRequest, handle: Arc<ScanHandle>) -> Result<Vec<S
         }
     }
     command
-        .arg(target)
+        .args(&nmap_targets)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    configure_background_command(&mut command);
     let child = command
         .spawn()
         .map_err(|error| format!("Unable to start Nmap: {error}"))?;
@@ -430,6 +763,8 @@ fn run_nmap_scan(request: &ScanRequest, handle: Arc<ScanHandle>) -> Result<Vec<S
         .child
         .lock()
         .map_err(|_| "Unable to manage the Nmap process.")? = Some(child);
+    let mut last_preview = Instant::now() - Duration::from_secs(1);
+    let mut emitted_hosts = HashMap::<String, (usize, Option<String>)>::new();
     loop {
         if handle.cancelled.load(Ordering::Relaxed) {
             return Err("__cancelled__".into());
@@ -443,6 +778,20 @@ fn run_nmap_scan(request: &ScanRequest, handle: Arc<ScanHandle>) -> Result<Vec<S
             .is_some();
         if finished {
             break;
+        }
+        if last_preview.elapsed() >= Duration::from_millis(600) {
+            if let Ok(xml) = fs::read_to_string(&output_path) {
+                if let Ok(hosts) = parse_nmap_xml(&xml) {
+                    for host in hosts {
+                        let signature = (host.ports.len(), host.mac_address.clone());
+                        if emitted_hosts.get(&host.address) != Some(&signature) {
+                            emitted_hosts.insert(host.address.clone(), signature);
+                            let _ = on_event.send(ScanEvent::Host { host });
+                        }
+                    }
+                }
+            }
+            last_preview = Instant::now();
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -461,7 +810,7 @@ pub fn start_network_scan(
     if !validate_id(&request.scan_id) {
         return Err("Invalid scan identifier.".into());
     }
-    validate_target(&request.target)?;
+    parse_targets(&request.target)?;
     let engine =
         if request.engine == "nmap" || (request.engine == "auto" && nmap_version().is_some()) {
             "nmap"
@@ -488,7 +837,7 @@ pub fn start_network_scan(
     });
     thread::spawn(move || {
         let result = if engine_name == "nmap" {
-            run_nmap_scan(&request, Arc::clone(&handle))
+            run_nmap_scan(&request, Arc::clone(&handle), on_event.clone())
         } else {
             run_builtin_scan(request, Arc::clone(&handle), on_event.clone())
         };
@@ -545,13 +894,50 @@ mod tests {
         assert_eq!(parse_ports("22,80,443").unwrap(), vec![22, 80, 443]);
         assert!(target_addresses("192.168.1.0/21").is_err());
         assert_eq!(target_addresses("192.168.1.0/24").unwrap().len(), 256);
+        assert_eq!(
+            parse_targets("192.168.1.0/24\n10.0.0.0/24,192.168.1.0/24").unwrap(),
+            vec!["192.168.1.0/24", "10.0.0.0/24"]
+        );
+        assert_eq!(
+            parse_targets("192.168.0.1/24, 192.168.1.1 - 254").unwrap(),
+            vec!["192.168.0.0/24", "192.168.1.1-192.168.1.254"]
+        );
+        assert_eq!(target_addresses("192.168.1.1-254").unwrap().len(), 254);
+        assert_eq!(
+            target_addresses("192.168.2.1-192.168.10.254")
+                .unwrap()
+                .len(),
+            2302
+        );
+        assert!(target_addresses("192.168.1.254-1").is_err());
+        assert_eq!(
+            ipv4_range_to_cidrs(
+                "192.168.1.1".parse().unwrap(),
+                "192.168.1.254".parse().unwrap()
+            )
+            .first()
+            .map(String::as_str),
+            Some("192.168.1.1/32")
+        );
+        assert_eq!(
+            normalize_mac("aa-bb-cc-dd-ee-ff").as_deref(),
+            Some("AA:BB:CC:DD:EE:FF")
+        );
+        let mut macs = HashMap::new();
+        parse_neighbor_table("10.0.254.3  e0-63-da-85-00-48  dynamic", &mut macs);
+        assert_eq!(
+            macs.get(&"10.0.254.3".parse().unwrap()).map(String::as_str),
+            Some("E0:63:DA:85:00:48")
+        );
     }
 
     #[test]
     fn parses_nmap_host_and_service_xml() {
-        let xml = r#"<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/><hostnames><hostname name="router"/></hostnames><ports><port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH"/></port></ports></host></nmaprun>"#;
+        let xml = r#"<nmaprun><host><address addr="10.0.0.1" addrtype="ipv4"/><address addr="AA:BB:CC:DD:EE:FF" addrtype="mac" vendor="Example Networks"/><hostnames><hostname name="router"/></hostnames><ports><port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH"/></port></ports></host></nmaprun>"#;
         let hosts = parse_nmap_xml(xml).unwrap();
         assert_eq!(hosts[0].address, "10.0.0.1");
+        assert_eq!(hosts[0].mac_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(hosts[0].vendor.as_deref(), Some("Example Networks"));
         assert_eq!(hosts[0].ports[0].service, "ssh");
     }
 }

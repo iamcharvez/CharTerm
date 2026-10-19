@@ -1,7 +1,9 @@
-import { Check, ChevronRight, Menu, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Check, ChevronRight, Menu, ShieldCheck, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import type { SettingsPageId } from "../../components/SettingsSidebar";
+import { ActivityLogsPanel } from "./ActivityLogsPanel";
 import {
   loadPreferences,
   savePreferences,
@@ -17,6 +19,7 @@ const labels: Record<Exclude<SettingsPageId, "about">, string> = {
   security: "Security",
   notifications: "Notifications",
   accessibility: "Accessibility",
+  logs: "Activity Logs",
 };
 
 type SettingsPanelProps = {
@@ -81,7 +84,7 @@ export function SettingsPanel({
             />
             <ToggleRow
               label="Restore previous sessions"
-              description="Remember open local terminal tabs for the next launch."
+              description="Remember open connection tabs for the next launch."
               checked={preferences.restoreSessions}
               onChange={(value) => update("restoreSessions", value)}
             />
@@ -158,7 +161,7 @@ export function SettingsPanel({
 
         {page === "shortcuts" && (
           <section className="settings-form-card shortcut-list">
-            <ShortcutRow label="New local terminal" keys="Ctrl + Shift + T" />
+            <ShortcutRow label="New connection" keys="Ctrl + Shift + T" />
             <ShortcutRow
               label="Close active terminal"
               keys="Ctrl + Shift + W"
@@ -190,14 +193,14 @@ export function SettingsPanel({
             <div className="settings-info">
               <ShieldCheck size={17} />
               <span>
-                Applied to new SSH, SFTP, and Telnet connection attempts.
+                Applied to new SSH, SFTP, Telnet, and custom TCP connection attempts.
               </span>
             </div>
           </section>
         )}
 
         {page === "security" && (
-          <section className="settings-form-card">
+          <><section className="settings-form-card">
             <div className="settings-row locked">
               <div>
                 <strong>SSH host-key verification</strong>
@@ -217,7 +220,7 @@ export function SettingsPanel({
               </div>
               <span className="disabled-badge">Disabled</span>
             </div>
-          </section>
+          </section><KnownHosts /></>
         )}
 
         {page === "notifications" && (
@@ -241,9 +244,26 @@ export function SettingsPanel({
             />
           </section>
         )}
+
+        {page === "logs" && <ActivityLogsPanel />}
       </div>
     </main>
   );
+}
+
+type KnownHost = { host: string; port: number; keyType: string; fingerprint: string; firstSeenAt: number; lastSeenAt: number };
+
+function KnownHosts() {
+  const [hosts, setHosts] = useState<KnownHost[]>([]);
+  const desktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  const refresh = () => desktop && void invoke<KnownHost[]>("list_known_hosts").then(setHosts).catch(() => setHosts([]));
+  useEffect(() => { refresh(); }, [desktop]);
+  const forget = async (host: KnownHost) => {
+    if (!window.confirm(`Forget the trusted key for ${host.host}:${host.port}? You will be asked to verify it again.`)) return;
+    await invoke("forget_known_host", { host: host.host, port: host.port, keyType: host.keyType });
+    refresh();
+  };
+  return <section className="settings-form-card known-hosts-card"><div className="known-hosts-heading"><div><strong>Trusted server identities</strong><span>Review fingerprints accepted for SFTP connections.</span></div><b>{hosts.length}</b></div>{hosts.length ? hosts.map((host) => <div className="known-host-row" key={`${host.host}:${host.port}:${host.keyType}`}><ShieldCheck size={17} /><div><strong>{host.host}:{host.port}</strong><span>{host.keyType}</span><code>{host.fingerprint}</code></div><button type="button" onClick={() => void forget(host)} title="Forget host key"><Trash2 size={15} /></button></div>) : <div className="settings-info"><ShieldCheck size={17} /><span>No server keys have been trusted yet.</span></div>}</section>;
 }
 
 function ToggleRow({

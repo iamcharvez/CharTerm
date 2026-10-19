@@ -3,6 +3,14 @@
   "identifier": "default",
   "description": "Default capability for the CharTerm main window",
   "windows": ["main"],
-  "permissions": ["core:default", "core:app:default"]
+  "permissions": [
+    "core:default",
+    "core:app:default",
+    "dialog:default",
+    "opener:allow-open-url",
+    "opener:allow-default-urls",
+    "updater:default",
+    "process:allow-restart"
+  ]
 }
 

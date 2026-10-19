@@ -22,20 +22,36 @@ export const defaultPreferences: CharTermPreferences = {
   reducedMotion: false,
 };
 
-export function loadPreferences(): CharTermPreferences {
+let cachedPreferences: CharTermPreferences = (() => {
   try {
+    const stored = typeof localStorage === "undefined" ? null : localStorage.getItem("charterm-preferences");
+    return stored ? { ...defaultPreferences, ...JSON.parse(stored) } : defaultPreferences;
+  } catch { return defaultPreferences; }
+})();
+
+export function loadPreferences(): CharTermPreferences {
+  if (typeof localStorage !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
     const stored = localStorage.getItem("charterm-preferences");
-    return stored
-      ? { ...defaultPreferences, ...JSON.parse(stored) }
-      : defaultPreferences;
-  } catch {
-    return defaultPreferences;
+    if (stored) {
+      try { cachedPreferences = { ...defaultPreferences, ...JSON.parse(stored) }; }
+      catch { cachedPreferences = defaultPreferences; }
+    }
   }
+  return cachedPreferences;
 }
 
 export function savePreferences(preferences: CharTermPreferences) {
-  localStorage.setItem("charterm-preferences", JSON.stringify(preferences));
+  cachedPreferences = { ...defaultPreferences, ...preferences };
+  if (!("__TAURI_INTERNALS__" in window)) {
+    localStorage.setItem("charterm-preferences", JSON.stringify(cachedPreferences));
+  }
   window.dispatchEvent(
-    new CustomEvent("charterm-preferences", { detail: preferences }),
+    new CustomEvent("charterm-preferences", { detail: cachedPreferences }),
   );
+}
+
+export function hydratePreferences(preferences?: Partial<CharTermPreferences>) {
+  if (!preferences) return;
+  cachedPreferences = { ...defaultPreferences, ...preferences };
+  window.dispatchEvent(new CustomEvent("charterm-preferences", { detail: cachedPreferences }));
 }

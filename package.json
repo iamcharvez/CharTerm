@@ -1,7 +1,7 @@
 {
   "name": "charterm",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.8.7",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "scripts": {
@@ -12,13 +12,17 @@
     "test:watch": "vitest",
     "check:versions": "node scripts/check-versions.mjs",
     "tauri": "tauri",
-    "bundle": "tauri build",
-    "bundle:windows": "tauri build --bundles nsis,msi",
-    "bundle:linux": "tauri build --bundles appimage,deb,rpm",
-    "bundle:macos": "tauri build --bundles app,dmg"
+    "bundle": "node scripts/signed-build.mjs",
+    "bundle:windows": "node scripts/signed-build.mjs --bundles nsis,msi",
+    "bundle:linux": "node scripts/signed-build.mjs --bundles appimage,deb,rpm",
+    "bundle:macos": "node scripts/signed-build.mjs --bundles app,dmg"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "@tauri-apps/plugin-opener": "^2.5.2",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "lucide-react": "^0.577.0",
