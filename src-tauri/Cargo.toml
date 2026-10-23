@@ -26,6 +26,8 @@ serialport = { version = "4", default-features = false }
 keyring = "4.2"
 zeroize = "1"
 quick-xml = "0.38"
+dns-lookup = "4.0.2"
+oui-data = "0.2.4"
 base64 = "0.22"
 ssh-key = { version = "0.6.7", features = ["ed25519", "rsa", "encryption", "getrandom"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

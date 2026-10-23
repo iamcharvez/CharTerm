@@ -171,7 +171,13 @@ export function NetworkScannerPage() {
 
   const exportResults = () => {
     const rows = ["address,hostname,mac_address,vendor,port,protocol,service,product"];
-    for (const host of hosts) for (const port of host.ports) rows.push([host.address, host.hostname ?? "", host.macAddress ?? "", host.vendor ?? "", port.port, port.protocol, port.service, port.product ?? ""].map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","));
+    for (const host of hosts) {
+      if (host.ports.length === 0) {
+        rows.push([host.address, host.hostname ?? "", host.macAddress ?? "", host.vendor ?? "", "", "", "", ""].map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","));
+      } else {
+        for (const port of host.ports) rows.push([host.address, host.hostname ?? "", host.macAddress ?? "", host.vendor ?? "", port.port, port.protocol, port.service, port.product ?? ""].map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","));
+      }
+    }
     const url = URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" }));
     const link = document.createElement("a"); link.href = url; link.download = `charterm-scan-${Date.now()}.csv`; link.click(); URL.revokeObjectURL(url);
   };
@@ -194,7 +200,7 @@ export function NetworkScannerPage() {
           {target.trim() && targetAnalysis.error && <div className="scanner-target-feedback error"><AlertTriangle size={15} /><span>{targetAnalysis.error}</span></div>}
           {!targetAnalysis.error && targetAnalysis.corrections.length > 0 && <div className="scanner-target-feedback correction"><CheckCircle2 size={15} /><span>{targetAnalysis.corrections.map((item) => `${item.from} → ${item.to}`).join(" · ")}</span><button type="button" onClick={() => setTarget(targetAnalysis.normalized)} disabled={running}>Apply</button></div>}
           <div className="scanner-field-grid">
-            <label className="field"><span>Engine</span><select value={engine} onChange={(event) => setEngine(event.target.value)} disabled={running}><option value="auto">Automatic</option><option value="builtin">Built-in TCP</option><option value="nmap" disabled={!status.nmapAvailable}>Nmap</option></select></label>
+            <label className="field"><span>Engine</span><select value={engine} onChange={(event) => setEngine(event.target.value)} disabled={running}><option value="auto">Automatic</option><option value="builtin">Built-in discovery</option><option value="nmap" disabled={!status.nmapAvailable}>Nmap</option></select></label>
             <label className="field"><span>Scan type</span><select value={mode} onChange={(event) => setMode(event.target.value)} disabled={running}><option value="ports">Ports and devices</option><option value="discovery">Device discovery</option></select></label>
           </div>
           {mode === "ports" && <>
@@ -210,7 +216,7 @@ export function NetworkScannerPage() {
             </div>
           </>}
           <div className="scanner-authorized"><ShieldCheck size={16} /><span>Scanning can create connection logs and alerts on target systems.</span></div>
-          {!status.nmapAvailable && <div className="scanner-engine-note">The built-in engine finds devices through open TCP ports. Install Nmap for ARP/ICMP host discovery and detailed service versions.</div>}
+          {!status.nmapAvailable && <div className="scanner-engine-note">The built-in engine uses ICMP, the operating system neighbor table, reverse name lookup, and TCP checks. Nmap remains optional for deeper service-version detection.</div>}
           {running ? <button className="scanner-stop" type="button" onClick={() => void cancelScan()}><Square size={15} /> Stop scan</button> : <button className="primary-action scanner-start" type="submit"><Play size={16} /> Start scan</button>}
         </form>
 
@@ -226,7 +232,7 @@ export function NetworkScannerPage() {
                 return actions.web || actions.ssh || actions.telnet;
               });
               return <article className="scan-host" key={host.address}>
-                <div className="scan-host-summary"><span><Server size={18} /></span><div><strong>{host.hostname || host.address}</strong>{host.hostname && <small>{host.address}</small>}<div className="scan-host-identity"><code>{host.macAddress || "MAC unavailable"}</code>{host.vendor && <em>{host.vendor}</em>}</div></div><b>{host.ports.length} open</b></div>
+                <div className="scan-host-summary"><span><Server size={18} /></span><div><strong>{host.hostname || host.address}</strong><small>{host.hostname ? host.address : "Hostname unavailable"}</small><div className="scan-host-identity"><code>{host.macAddress || "MAC unavailable"}</code>{host.vendor && <em>{host.vendor}</em>}</div></div><b>{host.ports.length} open</b></div>
                 <div className="scan-port-list">{host.ports.length ? host.ports.map((port) => {
                   const actions = getPortActions(port);
                   return <div key={`${port.protocol}-${port.port}`}><strong>{port.port}</strong><span>{port.protocol}</span><span>{port.service}</span><small>{port.product || "—"}</small><div className="scan-port-actions">

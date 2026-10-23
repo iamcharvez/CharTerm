@@ -354,6 +354,17 @@ fn normalize_mac(value: &str) -> Option<String> {
     )
 }
 
+fn is_discoverable_mac(mac: &str) -> bool {
+    let compact = mac.replace(':', "");
+    let Some(first_octet) = compact
+        .get(0..2)
+        .and_then(|value| u8::from_str_radix(value, 16).ok())
+    else {
+        return false;
+    };
+    compact != "000000000000" && compact != "FFFFFFFFFFFF" && first_octet & 0x01 == 0
+}
+
 fn parse_neighbor_table(output: &str, macs: &mut HashMap<IpAddr, String>) {
     for line in output.lines() {
         let columns: Vec<&str> = line.split_whitespace().collect();
@@ -363,58 +374,97 @@ fn parse_neighbor_table(output: &str, macs: &mut HashMap<IpAddr, String>) {
         else {
             continue;
         };
-        if let Some(mac) = columns.iter().find_map(|value| normalize_mac(value)) {
+        if let Some(mac) = columns
+            .iter()
+            .find_map(|value| normalize_mac(value))
+            .filter(|mac| is_discoverable_mac(mac))
+        {
             macs.insert(address, mac);
         }
     }
 }
 
-fn refresh_neighbor_cache(addresses: &[IpAddr]) {
-    let addresses: Vec<IpAddr> = addresses.iter().copied().filter(IpAddr::is_ipv4).collect();
+fn probe_addresses(
+    addresses: &[IpAddr],
+    handle: &Arc<ScanHandle>,
+    completed: &Arc<AtomicUsize>,
+    total: usize,
+    on_event: &Channel<ScanEvent>,
+) -> HashSet<IpAddr> {
+    let addresses: Vec<IpAddr> = addresses.to_vec();
     let jobs = Arc::new(addresses);
     let next = Arc::new(AtomicUsize::new(0));
+    let responding = Arc::new(Mutex::new(HashSet::new()));
     let workers = jobs.len().min(32);
     thread::scope(|scope| {
         for _ in 0..workers {
             let jobs = Arc::clone(&jobs);
             let next = Arc::clone(&next);
+            let responding = Arc::clone(&responding);
+            let completed = Arc::clone(completed);
+            let handle = Arc::clone(handle);
+            let on_event = on_event.clone();
             scope.spawn(move || loop {
+                if handle.cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
                 let index = next.fetch_add(1, Ordering::Relaxed);
                 let Some(address) = jobs.get(index) else {
                     break;
                 };
                 #[cfg(target_os = "windows")]
-                {
+                let status = {
                     let mut command = Command::new("ping");
                     command
                         .args(["-n", "1", "-w", "300", &address.to_string()])
                         .stdout(Stdio::null())
                         .stderr(Stdio::null());
                     configure_background_command(&mut command);
-                    let _ = command.status();
-                }
+                    command.status()
+                };
                 #[cfg(not(target_os = "windows"))]
-                let _ = Command::new("ping")
+                let status = Command::new("ping")
                     .args(["-c", "1", "-W", "1", &address.to_string()])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
+
+                if status.is_ok_and(|status| status.success()) {
+                    if let Ok(mut found) = responding.lock() {
+                        found.insert(*address);
+                    }
+                    let _ = on_event.send(ScanEvent::Host {
+                        host: ScanHost {
+                            address: address.to_string(),
+                            hostname: None,
+                            mac_address: None,
+                            vendor: None,
+                            ports: Vec::new(),
+                        },
+                    });
+                }
+                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                if done == total || done % 8 == 0 {
+                    let _ = on_event.send(ScanEvent::Progress {
+                        completed: done,
+                        total,
+                    });
+                }
             });
         }
     });
+    let responding = responding
+        .lock()
+        .map(|found| found.clone())
+        .unwrap_or_default();
+    responding
 }
 
 fn collect_mac_addresses() -> HashMap<IpAddr, String> {
     let mut macs = HashMap::new();
     #[cfg(target_os = "windows")]
     {
-        let mut arp = Command::new("arp");
-        arp.arg("-a");
-        configure_background_command(&mut arp);
-        if let Ok(output) = arp.output() {
-            parse_neighbor_table(&String::from_utf8_lossy(&output.stdout), &mut macs);
-        }
-        const LOCAL_ADAPTER_SCRIPT: &str = "Get-NetIPConfiguration | ForEach-Object { $mac = $_.NetAdapter.MacAddress; $_.IPv4Address | ForEach-Object { Write-Output ($_.IPAddress + '|' + $mac) } }";
+        const NEIGHBOR_SCRIPT: &str = "$valid = @('Reachable','Delay','Probe','Permanent'); Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $valid -contains $_.State -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' } | ForEach-Object { Write-Output ($_.IPAddress + '|' + $_.LinkLayerAddress) }; Get-NetIPConfiguration | ForEach-Object { $mac = $_.NetAdapter.MacAddress; $_.IPv4Address | ForEach-Object { Write-Output ($_.IPAddress + '|' + $mac) } }";
         let mut powershell = Command::new("powershell.exe");
         powershell.args([
             "-NoProfile",
@@ -422,7 +472,7 @@ fn collect_mac_addresses() -> HashMap<IpAddr, String> {
             "-WindowStyle",
             "Hidden",
             "-Command",
-            LOCAL_ADAPTER_SCRIPT,
+            NEIGHBOR_SCRIPT,
         ]);
         configure_background_command(&mut powershell);
         if let Ok(output) = powershell.output() {
@@ -431,8 +481,19 @@ fn collect_mac_addresses() -> HashMap<IpAddr, String> {
                     continue;
                 };
                 if let (Ok(address), Some(mac)) = (address.parse::<IpAddr>(), normalize_mac(mac)) {
+                    if !is_discoverable_mac(&mac) {
+                        continue;
+                    }
                     macs.insert(address, mac);
                 }
+            }
+        }
+        if macs.is_empty() {
+            let mut arp = Command::new("arp");
+            arp.arg("-a");
+            configure_background_command(&mut arp);
+            if let Ok(output) = arp.output() {
+                parse_neighbor_table(&String::from_utf8_lossy(&output.stdout), &mut macs);
             }
         }
     }
@@ -445,6 +506,45 @@ fn collect_mac_addresses() -> HashMap<IpAddr, String> {
         }
     }
     macs
+}
+
+fn resolve_hostnames(addresses: &[IpAddr]) -> HashMap<IpAddr, String> {
+    let jobs = Arc::new(addresses.to_vec());
+    let next = Arc::new(AtomicUsize::new(0));
+    let names = Arc::new(Mutex::new(HashMap::new()));
+    let workers = jobs.len().min(24);
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            let jobs = Arc::clone(&jobs);
+            let next = Arc::clone(&next);
+            let names = Arc::clone(&names);
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(address) = jobs.get(index) else {
+                    break;
+                };
+                let Ok(name) = dns_lookup::lookup_addr(address) else {
+                    continue;
+                };
+                let name = name.trim().trim_end_matches('.');
+                if name.is_empty() || name == address.to_string() {
+                    continue;
+                }
+                if let Ok(mut found) = names.lock() {
+                    found.insert(*address, name.to_string());
+                }
+            });
+        }
+    });
+    names.lock().map(|names| names.clone()).unwrap_or_default()
+}
+
+fn vendor_for_mac(mac: &str) -> Option<String> {
+    let first_octet = u8::from_str_radix(mac.get(0..2)?, 16).ok()?;
+    if first_octet & 0x02 != 0 {
+        return None;
+    }
+    oui_data::lookup(mac).map(|record| record.organization().to_string())
 }
 
 fn service_name(port: u16) -> &'static str {
@@ -498,17 +598,50 @@ fn run_builtin_scan(
             "This scan is too large. Reduce the number of subnets or selected ports.".into(),
         );
     }
-    let jobs: Vec<(IpAddr, u16)> = addresses
-        .iter()
-        .flat_map(|address| ports.iter().map(move |port| (*address, *port)))
-        .collect();
-    let total = jobs.len();
+    let jobs: Vec<(IpAddr, u16)> = if request.mode == "discovery" {
+        Vec::new()
+    } else {
+        addresses
+            .iter()
+            .flat_map(|address| ports.iter().map(move |port| (*address, *port)))
+            .collect()
+    };
+    let total = addresses.len() + jobs.len();
     let jobs = Arc::new(jobs);
     let next = Arc::new(AtomicUsize::new(0));
     let completed = Arc::new(AtomicUsize::new(0));
     let open = Arc::new(Mutex::new(HashMap::<IpAddr, Vec<u16>>::new()));
     let timeout = Duration::from_millis(request.timeout_ms.clamp(50, 10_000));
-    let workers = request.concurrency.clamp(1, 512).min(total.max(1));
+    let workers = request.concurrency.clamp(1, 512).min(jobs.len().max(1));
+
+    // Discovery is independent from port scanning. A device with no selected TCP
+    // port open is still a device and must remain visible in the results.
+    let responding = probe_addresses(&addresses, &handle, &completed, total, &on_event);
+    if handle.cancelled.load(Ordering::Relaxed) {
+        return Err("__cancelled__".into());
+    }
+    let macs = collect_mac_addresses();
+    let target_set: HashSet<IpAddr> = addresses.iter().copied().collect();
+    let mut discovered: HashSet<IpAddr> = responding;
+    discovered.extend(
+        macs.keys()
+            .copied()
+            .filter(|address| target_set.contains(address)),
+    );
+    let initial_addresses: Vec<IpAddr> = discovered.iter().copied().collect();
+    let initial_names = resolve_hostnames(&initial_addresses);
+    for address in &initial_addresses {
+        let mac_address = macs.get(address).cloned();
+        let _ = on_event.send(ScanEvent::Host {
+            host: ScanHost {
+                address: address.to_string(),
+                hostname: initial_names.get(address).cloned(),
+                vendor: mac_address.as_deref().and_then(vendor_for_mac),
+                mac_address,
+                ports: Vec::new(),
+            },
+        });
+    }
 
     thread::scope(|scope| {
         for _ in 0..workers {
@@ -571,19 +704,27 @@ fn run_builtin_scan(
         .lock()
         .map_err(|_| "Unable to collect scan results.".to_string())?
         .clone();
-    let discovered_addresses: Vec<IpAddr> = open.keys().copied().collect();
-    refresh_neighbor_cache(&discovered_addresses);
-    let macs = collect_mac_addresses();
-    let mut hosts: Vec<ScanHost> = open
+    discovered.extend(open.keys().copied());
+    let mut discovered_addresses: Vec<IpAddr> = discovered.into_iter().collect();
+    discovered_addresses.sort_unstable();
+    let mut names = initial_names;
+    let unnamed_addresses: Vec<IpAddr> = discovered_addresses
         .iter()
-        .map(|(address, ports)| {
-            let mut ports = ports.clone();
+        .copied()
+        .filter(|address| !names.contains_key(address))
+        .collect();
+    names.extend(resolve_hostnames(&unnamed_addresses));
+    let hosts: Vec<ScanHost> = discovered_addresses
+        .iter()
+        .map(|address| {
+            let mut ports = open.get(address).cloned().unwrap_or_default();
             ports.sort_unstable();
+            let mac_address = macs.get(address).cloned();
             ScanHost {
                 address: address.to_string(),
-                hostname: None,
-                mac_address: macs.get(address).cloned(),
-                vendor: None,
+                hostname: names.get(address).cloned(),
+                vendor: mac_address.as_deref().and_then(vendor_for_mac),
+                mac_address,
                 ports: ports
                     .into_iter()
                     .map(|port| ScanPort {
@@ -596,7 +737,6 @@ fn run_builtin_scan(
             }
         })
         .collect();
-    hosts.sort_by(|a, b| a.address.cmp(&b.address));
     Ok(hosts)
 }
 
@@ -923,6 +1063,10 @@ mod tests {
             normalize_mac("aa-bb-cc-dd-ee-ff").as_deref(),
             Some("AA:BB:CC:DD:EE:FF")
         );
+        assert!(vendor_for_mac("98:EE:CB:9B:62:7C").is_some());
+        assert!(vendor_for_mac("D6:7E:C3:02:00:02").is_none());
+        assert!(!is_discoverable_mac("FF:FF:FF:FF:FF:FF"));
+        assert!(is_discoverable_mac("D6:7E:C3:02:00:02"));
         let mut macs = HashMap::new();
         parse_neighbor_table("10.0.254.3  e0-63-da-85-00-48  dynamic", &mut macs);
         assert_eq!(

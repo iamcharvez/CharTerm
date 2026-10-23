@@ -2,12 +2,13 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Clipboard, Copy, Power, Radio, RotateCcw } from "lucide-react";
+import { Clipboard, Copy, DatabaseZap, Power, Radio, RotateCcw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { loadPreferences } from "../../lib/preferences";
 import { recordActivity } from "../../lib/activityLog";
 import { removeNativeConnection, updateNativeConnection } from "../../lib/nativeCore";
 import { detectLegacyCompatibility } from "../../lib/sshCompatibility";
+import { createSftpCompanion } from "../../lib/sftpCompanion";
 import {
   useAppStore,
   type TerminalTab,
@@ -40,6 +41,7 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
   );
   const setSessionUsername = useAppStore((state) => state.setSessionUsername);
   const closeTerminal = useAppStore((state) => state.closeTerminal);
+  const openConnection = useAppStore((state) => state.openConnection);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -386,6 +388,15 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
       await invoke(tab.kind === "serial" ? "write_serial_terminal" : tab.kind === "telnet" ? "write_telnet_terminal" : tab.kind === "tcp" ? "write_tcp_terminal" : "write_local_terminal", { sessionId, data: text });
   };
 
+  const openSftpCompanion = () => {
+    if (tab.kind !== "ssh" || !tab.connection?.host) return;
+    openConnection(
+      createSftpCompanion(tab.connection),
+      tab.sessionPassword,
+      tab.sessionKeyPassphrase,
+    );
+  };
+
   return (
     <section
       className={`terminal-pane ${active ? "active" : ""}`}
@@ -397,6 +408,16 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
           {status}
         </div>
         <div>
+          {tab.kind === "ssh" && (
+            <button
+              type="button"
+              onClick={openSftpCompanion}
+              title="Open this SSH server in a new SFTP files tab"
+              disabled={status !== "active"}
+            >
+              <DatabaseZap size={15} /> SFTP Files
+            </button>
+          )}
           <button
             className={transferActive ? "transfer-running" : ""}
             type="button"

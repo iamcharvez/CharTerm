@@ -1,0 +1,7 @@
+[env]
+# libssh2 disables Windows CNG ECDH by default for pre-Windows-10 compatibility.
+# CharTerm targets supported Windows 10/11 releases, so enable it for modern
+# OpenSSH servers that no longer advertise finite-field Diffie-Hellman methods.
+CFLAGS_x86_64_pc_windows_msvc = "-DLIBSSH2_ECDSA_WINCNG"
+CFLAGS_aarch64_pc_windows_msvc = "-DLIBSSH2_ECDSA_WINCNG"
+CFLAGS_i686_pc_windows_msvc = "-DLIBSSH2_ECDSA_WINCNG"

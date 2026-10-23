@@ -1,6 +1,6 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Serialize;
-use ssh2::{HashType, HostKeyType, KeyboardInteractivePrompt, Prompt, Session, Sftp};
+use ssh2::{HashType, HostKeyType, KeyboardInteractivePrompt, MethodType, Prompt, Session, Sftp};
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -200,6 +200,74 @@ fn connect_socket(host: &str, port: u16, timeout_seconds: u16) -> Result<TcpStre
             .map(|error| error.to_string())
             .unwrap_or_else(|| "no network address was available".into())
     ))
+}
+
+fn append_algorithms(base: &str, extra: &str, enabled: bool) -> String {
+    if enabled {
+        format!("{base},{extra}")
+    } else {
+        base.to_string()
+    }
+}
+
+fn connect_ssh_transport(
+    host: &str,
+    port: u16,
+    timeout_seconds: u16,
+    compatibility_fallback: bool,
+    allow_legacy_ssh_rsa: bool,
+    allow_legacy_mac_sha1: bool,
+    allow_legacy_kex_sha1: bool,
+    allow_legacy_ciphers: bool,
+) -> Result<Session, String> {
+    let socket = connect_socket(host, port, timeout_seconds)?;
+    let mut session =
+        Session::new().map_err(|error| format!("Unable to initialize the SFTP engine: {error}"))?;
+
+    if compatibility_fallback {
+        // WinCNG can occasionally choose a mutually advertised ECDSA/cipher combination
+        // that later fails host-key verification. Retry with a compact, modern suite that
+        // OpenSSH and network appliances widely support before considering legacy methods.
+        let host_keys = append_algorithms(
+            "rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-nistp256",
+            "ssh-rsa",
+            allow_legacy_ssh_rsa,
+        );
+        let key_exchange = append_algorithms(
+            "ecdh-sha2-nistp256,diffie-hellman-group14-sha256",
+            "diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1",
+            allow_legacy_kex_sha1,
+        );
+        let ciphers = append_algorithms(
+            "aes256-ctr,aes192-ctr,aes128-ctr",
+            "aes256-cbc,aes192-cbc,aes128-cbc,3des-cbc",
+            allow_legacy_ciphers,
+        );
+        let macs = append_algorithms(
+            "hmac-sha2-512,hmac-sha2-256",
+            "hmac-sha1,hmac-sha1-96",
+            allow_legacy_mac_sha1,
+        );
+
+        session
+            .method_pref(MethodType::HostKey, &host_keys)
+            .map_err(|error| format!("Unable to configure SSH host-key compatibility: {error}"))?;
+        session
+            .method_pref(MethodType::Kex, &key_exchange)
+            .map_err(|error| format!("Unable to configure SSH key exchange: {error}"))?;
+        session
+            .method_pref(MethodType::CryptCs, &ciphers)
+            .and_then(|_| session.method_pref(MethodType::CryptSc, &ciphers))
+            .map_err(|error| format!("Unable to configure SSH encryption: {error}"))?;
+        session
+            .method_pref(MethodType::MacCs, &macs)
+            .and_then(|_| session.method_pref(MethodType::MacSc, &macs))
+            .map_err(|error| format!("Unable to configure SSH integrity protection: {error}"))?;
+    }
+
+    session.set_tcp_stream(socket);
+    session.handshake().map_err(|error| error.to_string())?;
+    Ok(session)
 }
 
 fn with_session<T>(
@@ -434,6 +502,10 @@ pub fn connect_sftp(
     mut key_passphrase: Option<String>,
     identity_id: Option<String>,
     connection_timeout: u16,
+    allow_legacy_ssh_rsa: bool,
+    allow_legacy_mac_sha1: bool,
+    allow_legacy_kex_sha1: bool,
+    allow_legacy_ciphers: bool,
     manager: State<'_, SftpManager>,
     database: State<'_, crate::app_database::AppDatabase>,
 ) -> Result<SftpConnectionInfo, String> {
@@ -454,13 +526,33 @@ pub fn connect_sftp(
             .transpose()?;
     }
 
-    let socket = connect_socket(host, port, connection_timeout)?;
-    let mut session =
-        Session::new().map_err(|error| format!("Unable to initialize the SFTP engine: {error}"))?;
-    session.set_tcp_stream(socket);
-    session
-        .handshake()
-        .map_err(|error| format!("Unable to negotiate SSH with {host}:{port}: {error}"))?;
+    let session = match connect_ssh_transport(
+        host,
+        port,
+        connection_timeout,
+        false,
+        allow_legacy_ssh_rsa,
+        allow_legacy_mac_sha1,
+        allow_legacy_kex_sha1,
+        allow_legacy_ciphers,
+    ) {
+        Ok(session) => session,
+        Err(first_error) => connect_ssh_transport(
+            host,
+            port,
+            connection_timeout,
+            true,
+            allow_legacy_ssh_rsa,
+            allow_legacy_mac_sha1,
+            allow_legacy_kex_sha1,
+            allow_legacy_ciphers,
+        )
+        .map_err(|fallback_error| {
+            format!(
+                "Unable to negotiate SSH with {host}:{port}. The normal and compatible secure algorithm sets both failed. Initial error: {first_error}. Compatible retry: {fallback_error}"
+            )
+        })?,
+    };
 
     let actual_fingerprint = fingerprint(&session)?;
     let (key_type, public_key) = host_key(&session)?;

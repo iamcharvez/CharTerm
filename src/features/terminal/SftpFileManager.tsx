@@ -151,6 +151,10 @@ export function SftpFileManager({ tab, active }: SftpFileManagerProps) {
       keyPassphrase: tab.sessionKeyPassphrase ?? null,
       identityId: identity?.hasSavedPassphrase ? identity.id : null,
       connectionTimeout: preferences.connectionTimeout,
+      allowLegacySshRsa: connection.allowLegacySshRsa ?? false,
+      allowLegacyMacSha1: connection.allowLegacyMacSha1 ?? false,
+      allowLegacyKexSha1: connection.allowLegacyKexSha1 ?? false,
+      allowLegacyCiphers: connection.allowLegacyCiphers ?? false,
     })
       .then(async (info) => {
         if (cancelled) return;
