@@ -17,6 +17,7 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { PasswordInput } from "../../components/PasswordInput";
 import { flattenConnectionGroups } from "../../lib/connectionGroups";
+import { baudRateGroups, commonBaudRates, serialFormatLabel } from "../../lib/serialSettings";
 import {
   useAppStore,
   type ConnectionDraft,
@@ -59,11 +60,6 @@ const defaultPorts: Record<Exclude<ConnectionProtocol, "serial">, number> = {
   telnet: 23,
   tcp: 8080,
 };
-
-const commonBaudRates = [
-  300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200,
-  230400, 460800, 921600,
-];
 
 function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -340,6 +336,11 @@ export function QuickConnectPage() {
 
             {protocol === "serial" ? (
               <>
+                <div className="serial-connection-guide field-wide" aria-label="Serial connection steps">
+                  <span><b>1</b><span><strong>Choose a COM port</strong><small>Select a detected device or type COM3 manually.</small></span></span>
+                  <span><b>2</b><span><strong>Choose its speed</strong><small>Try 9,600 or 115,200 baud with 8-N-1.</small></span></span>
+                  <span><b>3</b><span><strong>Connect and adjust</strong><small>You can change speed later without closing the tab.</small></span></span>
+                </div>
                 <div className="serial-device-picker field-wide">
                   <div className="serial-device-heading">
                     <div>
@@ -377,32 +378,34 @@ export function QuickConnectPage() {
                     </div>
                   )}
                 </div>
-                <label className="field">
-                  <span>Port <small>select above or enter manually</small></span>
-                  <input
-                    list="serial-port-options"
-                    value={serialPort}
-                    onChange={(event) => setSerialPort(event.target.value)}
-                    placeholder="COM3 or /dev/ttyUSB0"
-                  />
-                  <datalist id="serial-port-options">
-                    {serialPorts.map((item) => <option key={item.name} value={item.name}>{item.kind}</option>)}
-                  </datalist>
-                </label>
-                <div className="field serial-baud-field">
-                  <span>Serial speed (baud) <small>choose common or type manually</small></span>
-                  <div className="serial-baud-inputs">
-                    <select
-                      aria-label="Common serial speed"
-                      value={commonBaudRates.includes(Number(baudRate)) ? baudRate : "custom"}
-                      onChange={(event) => setBaudRate(event.target.value === "custom" ? "" : event.target.value)}
-                    >
-                      {commonBaudRates.map((rate) => <option key={rate} value={rate}>{rate.toLocaleString()} baud</option>)}
-                      <option value="custom">Custom speed…</option>
-                    </select>
-                    <input aria-label="Manual serial speed" inputMode="numeric" pattern="[0-9]*" value={baudRate} onChange={(event) => setBaudRate(event.target.value.replace(/[^0-9]/g, ""))} placeholder="Type baud rate" aria-describedby="serial-baud-help" />
+                <div className="serial-basic-grid field-wide">
+                  <label className="field">
+                    <span>COM / serial port <small>select above or enter manually</small></span>
+                    <input
+                      list="serial-port-options"
+                      value={serialPort}
+                      onChange={(event) => setSerialPort(event.target.value)}
+                      placeholder="COM3 or /dev/ttyUSB0"
+                    />
+                    <datalist id="serial-port-options">
+                      {serialPorts.map((item) => <option key={item.name} value={item.name}>{item.kind}</option>)}
+                    </datalist>
+                  </label>
+                  <div className="field serial-baud-field">
+                    <span>Serial speed (baud) <small>preset or custom value</small></span>
+                    <div className="serial-baud-inputs">
+                      <select
+                        aria-label="Common serial speed"
+                        value={commonBaudRates.includes(Number(baudRate)) ? baudRate : "custom"}
+                        onChange={(event) => setBaudRate(event.target.value === "custom" ? "" : event.target.value)}
+                      >
+                        {baudRateGroups.map((group) => <optgroup key={group.label} label={group.label}>{group.rates.map((rate) => <option key={rate} value={rate}>{rate.toLocaleString()} baud</option>)}</optgroup>)}
+                        <option value="custom">Custom speed…</option>
+                      </select>
+                      <input aria-label="Manual serial speed" inputMode="numeric" pattern="[0-9]*" value={baudRate} onChange={(event) => setBaudRate(event.target.value.replace(/[^0-9]/g, ""))} placeholder="Custom baud" aria-describedby="serial-baud-help" />
+                    </div>
+                    <small id="serial-baud-help" className="field-help">Current format: {baudRate ? serialFormatLabel(Number(baudRate), serialDataBits, serialParity, serialStopBits) : "custom speed"} · {serialFlowControl === "none" ? "no flow control" : serialFlowControl === "hardware" ? "RTS/CTS" : "XON/XOFF"}</small>
                   </div>
-                  <small id="serial-baud-help" className="field-help">Manual entry is supported from 50 to 4,000,000 baud.</small>
                 </div>
                 <div className="field field-wide ssh-advanced-panel serial-advanced-panel">
                   <button type="button" className="ssh-advanced-toggle" onClick={() => setShowAdvancedSerial((value) => !value)} aria-expanded={showAdvancedSerial}>

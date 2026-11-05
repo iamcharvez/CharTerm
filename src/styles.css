@@ -354,6 +354,24 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 .xterm-host .xterm { height: 100%; }
 .terminal-toolbar button:disabled { opacity: .38; cursor: not-allowed; }
 .terminal-toolbar button.transfer-running { color: #22d3ee; background: rgba(34,211,238,.09); }
+.serial-live-settings { position:absolute; z-index:40; top:43px; right:12px; width:min(620px,calc(100% - 24px)); max-height:calc(100% - 58px); overflow:auto; padding:16px; border:1px solid rgba(34,211,238,.28); border-radius:15px; color:var(--text); background:color-mix(in srgb,var(--panel) 96%,#02070c); box-shadow:0 20px 60px rgba(0,0,0,.48); }
+.serial-live-settings > header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:13px; border-bottom:1px solid var(--border); }
+.serial-live-settings > header > div { display:grid; gap:3px; }
+.serial-live-settings > header span { color:var(--cyan); font-size:8px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+.serial-live-settings > header strong { font:700 13px "Cascadia Code",Consolas,monospace; }
+.serial-live-settings > header small { color:var(--muted); font-size:8px; }
+.serial-live-settings > header > button { display:grid; place-items:center; width:30px; height:30px; border:1px solid var(--border); border-radius:8px; color:var(--muted); background:transparent; cursor:pointer; }
+.serial-live-speed-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,.8fr); gap:10px; margin-top:14px; }
+.serial-live-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:13px; }
+.serial-live-options .serial-option:first-child { grid-column:1 / -1; }
+.serial-live-options .field { justify-content:end; }
+.serial-live-save { display:flex; align-items:center; gap:8px; margin-top:13px; color:var(--muted); font-size:8px; cursor:pointer; }
+.serial-live-save input { accent-color:var(--cyan); }
+.serial-live-error { margin-top:12px; padding:9px 10px; border:1px solid rgba(248,113,113,.24); border-radius:8px; color:#fca5a5; background:rgba(127,29,29,.18); font-size:8px; }
+.serial-live-settings > footer { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; margin-top:15px; padding-top:13px; border-top:1px solid var(--border); }
+.serial-live-settings > footer > span { margin-right:auto; color:var(--cyan); font:700 8px "Cascadia Code",Consolas,monospace; }
+.serial-live-settings > footer button { min-height:32px; display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:0 11px; border:1px solid var(--border); border-radius:8px; color:var(--text-soft); background:var(--surface); cursor:pointer; font-size:8px; font-weight:700; }
+.serial-live-settings > footer .primary-action { margin:0; color:white; border-color:transparent; background:linear-gradient(120deg,#0891b2,#2563eb); }
 .transfer-live-dot { width: 6px; height: 6px; border-radius: 50%; background: #34d399; box-shadow: 0 0 0 0 rgba(52,211,153,.45); animation: transfer-pulse 1.6s infinite; }
 
 /* Terminal protocol transfer center */
@@ -583,6 +601,13 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 .serial-device-check { color: var(--green); }
 .serial-device-empty { min-height: 74px; display: flex; align-items: center; justify-content: center; gap: 9px; padding: 14px; color: var(--muted); font-size: 8px; line-height: 1.5; text-align: center; }
 .serial-device-empty svg { flex: 0 0 auto; color: var(--cyan); }
+.serial-connection-guide { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.serial-connection-guide > span { min-width:0; display:flex; align-items:flex-start; gap:9px; padding:11px; border:1px solid var(--border); border-radius:11px; background:var(--surface-solid); }
+.serial-connection-guide > span > b { flex:0 0 auto; width:23px; height:23px; display:grid; place-items:center; border-radius:7px; color:var(--cyan); background:rgba(34,211,238,.09); font-size:9px; }
+.serial-connection-guide > span > span { min-width:0; display:grid; gap:3px; }
+.serial-connection-guide strong { color:var(--text); font-size:9px; }
+.serial-connection-guide small { color:var(--muted); font-size:7px; line-height:1.45; }
+.serial-basic-grid { display:grid; grid-template-columns:minmax(220px,1fr) minmax(360px,1.15fr); gap:13px; }
 .form-grid { display: grid; grid-template-columns: minmax(0,1fr) 140px; gap: 13px; }
 .field { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
 .field-wide { grid-column: 1 / -1; }
@@ -820,7 +845,7 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 .scan-host-actions button:hover { color:var(--text); border-color:var(--accent); background:color-mix(in srgb,var(--accent) 15%,var(--surface-solid)); transform:translateY(-1px); }
 .scan-host-actions button b { color:var(--text-soft); font:700 8px "JetBrains Mono",monospace; }
 .field-help { display:block; margin-top:5px; color:var(--muted); font-size:7px; line-height:1.45; }
-.serial-baud-inputs { display:grid; grid-template-columns:minmax(135px,.9fr) minmax(135px,1.1fr); gap:8px; }
+.serial-baud-inputs { display:grid; grid-template-columns:minmax(170px,1.15fr) minmax(120px,.85fr); gap:8px; }
 .serial-baud-inputs select, .serial-baud-inputs input { width:100%; min-width:0; }
 .scanner-advanced { overflow:hidden; border:1px solid var(--border); border-radius:10px; background:var(--background); }
 .scanner-advanced > button { width:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:9px; padding:10px; color:var(--text-soft); border:0; background:transparent; text-align:left; cursor:pointer; }
@@ -901,6 +926,9 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
   .scan-port-actions { grid-column: 1 / -1; justify-content: flex-start; flex-wrap: wrap; }
   .scanner-advanced-grid { grid-template-columns: 1fr; }
   .serial-baud-inputs { grid-template-columns: 1fr; }
+  .serial-connection-guide, .serial-basic-grid { grid-template-columns: 1fr; }
+  .serial-live-speed-grid, .serial-live-options { grid-template-columns:1fr; }
+  .serial-live-options .serial-option:first-child { grid-column:auto; }
   .calculator-family-switch { width: 100%; }
   .calculator-family-switch button { flex: 1; }
   .calculator-input-grid { grid-template-columns: 1fr 95px; }
@@ -918,6 +946,10 @@ button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
   .serial-device-heading { align-items: flex-start; }
   .serial-device-heading > div span { max-width: 190px; line-height: 1.45; }
   .serial-device-list { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 850px) {
+  .serial-connection-guide, .serial-basic-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 390px) {

@@ -21,6 +21,10 @@ export type AuthenticationMode = "auto" | "identity" | "agent" | "password";
 export type SerialParity = "none" | "odd" | "even";
 export type SerialFlowControl = "none" | "hardware" | "software";
 export type SerialEncoding = "utf-8" | "windows-1252" | "iso-8859-1";
+export type SerialSessionSettings = Pick<
+  ConnectionProfile,
+  "baudRate" | "serialDataBits" | "serialStopBits" | "serialParity" | "serialFlowControl" | "serialEncoding"
+>;
 
 export type SshIdentity = {
   id: string;
@@ -137,6 +141,7 @@ type AppState = {
     compatibility: LegacyCompatibility,
   ) => void;
   setSessionUsername: (terminalId: string, username: string) => void;
+  updateSerialSessionSettings: (terminalId: string, settings: SerialSessionSettings, saveToProfile?: boolean) => void;
   selectTerminal: (id: string) => void;
   setTerminalLayout: (layout: TerminalLayout) => void;
   addTerminalPane: () => void;
@@ -452,6 +457,23 @@ export const useAppStore = create<AppState>()(
               : tab,
           ),
         })),
+      updateSerialSessionSettings: (terminalId, settings, saveToProfile = false) =>
+        set((state) => {
+          const terminal = state.terminalTabs.find((tab) => tab.id === terminalId);
+          const profileId = terminal?.connection?.id;
+          return {
+            terminalTabs: state.terminalTabs.map((tab) =>
+              tab.id === terminalId && tab.connection
+                ? { ...tab, connection: { ...tab.connection, ...settings } }
+                : tab,
+            ),
+            profiles: saveToProfile && profileId
+              ? state.profiles.map((profile) =>
+                  profile.id === profileId ? { ...profile, ...settings } : profile,
+                )
+              : state.profiles,
+          };
+        }),
       selectTerminal: (id) =>
         set((state) => {
           if (state.terminalLayout === "single" || state.terminalPaneIds.includes(id)) {

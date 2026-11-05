@@ -2,15 +2,19 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Clipboard, Copy, DatabaseZap, Power, Radio, RotateCcw } from "lucide-react";
+import { Check, Clipboard, Copy, DatabaseZap, Gauge, Power, Radio, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { loadPreferences } from "../../lib/preferences";
 import { recordActivity } from "../../lib/activityLog";
 import { removeNativeConnection, updateNativeConnection } from "../../lib/nativeCore";
 import { detectLegacyCompatibility } from "../../lib/sshCompatibility";
 import { createSftpCompanion } from "../../lib/sftpCompanion";
+import { baudRateGroups, commonBaudRates, serialFormatLabel } from "../../lib/serialSettings";
 import {
   useAppStore,
+  type SerialEncoding,
+  type SerialFlowControl,
+  type SerialParity,
   type TerminalTab,
 } from "../../stores/useAppStore";
 import { TerminalTransferPanel } from "./TerminalTransferPanel";
@@ -40,15 +44,30 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
     (state) => state.enableLegacyCompatibility,
   );
   const setSessionUsername = useAppStore((state) => state.setSessionUsername);
+  const updateSerialSessionSettings = useAppStore((state) => state.updateSerialSessionSettings);
   const closeTerminal = useAppStore((state) => state.closeTerminal);
   const openConnection = useAppStore((state) => state.openConnection);
+  const isSavedSerialProfile = useAppStore((state) =>
+    Boolean(tab.connection && state.profiles.some((profile) => profile.id === tab.connection?.id)),
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const readyRef = useRef(false);
   const transferActiveRef = useRef(false);
+  const serialEncodingRef = useRef<SerialEncoding>(tab.connection?.serialEncoding ?? "utf-8");
   const [showTransfer, setShowTransfer] = useState(false);
   const [transferActive, setTransferActive] = useState(false);
+  const [showSerialSettings, setShowSerialSettings] = useState(false);
+  const [serialBaudRate, setSerialBaudRate] = useState(String(tab.connection?.baudRate ?? 115200));
+  const [serialDataBits, setSerialDataBits] = useState<5 | 6 | 7 | 8>(tab.connection?.serialDataBits ?? 8);
+  const [serialStopBits, setSerialStopBits] = useState<1 | 2>(tab.connection?.serialStopBits ?? 1);
+  const [serialParity, setSerialParity] = useState<SerialParity>(tab.connection?.serialParity ?? "none");
+  const [serialFlowControl, setSerialFlowControl] = useState<SerialFlowControl>(tab.connection?.serialFlowControl ?? "none");
+  const [serialEncoding, setSerialEncoding] = useState<SerialEncoding>(tab.connection?.serialEncoding ?? "utf-8");
+  const [saveSerialDefault, setSaveSerialDefault] = useState(false);
+  const [serialSettingsBusy, setSerialSettingsBusy] = useState(false);
+  const [serialSettingsError, setSerialSettingsError] = useState<string | null>(null);
   const [status, setStatus] = useState<
     "waiting" | "starting" | "active" | "closed" | "error"
   >("starting");
@@ -190,7 +209,7 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
       onEvent.onmessage = (message) => {
         if (disposed) return;
         if (message.event === "output") {
-          const text = new TextDecoder(tab.connection?.serialEncoding ?? "utf-8").decode(Uint8Array.from(message.data));
+          const text = new TextDecoder(serialEncodingRef.current).decode(Uint8Array.from(message.data));
           outputTail = `${outputTail}${text}`.slice(-1024);
           const detection =
             tab.kind === "ssh"
@@ -212,7 +231,7 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
                 }
               });
           }
-          if (tab.kind === "serial" && tab.connection?.serialEncoding && tab.connection.serialEncoding !== "utf-8") {
+          if (tab.kind === "serial" && serialEncodingRef.current !== "utf-8") {
             terminal.write(text);
           } else {
             terminal.write(Uint8Array.from(message.data));
@@ -328,7 +347,11 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
         void invoke(tab.kind === "serial" ? "close_serial_terminal" : tab.kind === "telnet" ? "close_telnet_terminal" : tab.kind === "tcp" ? "close_tcp_terminal" : "close_local_terminal", { sessionId });
       void removeNativeConnection(sessionId);
     };
-  }, [sessionId, tab.connection, tab.kind, tab.sessionKeyPassphrase, identity]);
+  }, [sessionId, tab.kind === "serial" ? null : tab.connection, tab.kind, tab.sessionKeyPassphrase, identity]);
+
+  useEffect(() => {
+    serialEncodingRef.current = tab.connection?.serialEncoding ?? "utf-8";
+  }, [tab.connection?.serialEncoding]);
 
   useEffect(() => {
     if (!active || !pageActive) {
@@ -397,6 +420,44 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
     );
   };
 
+  const applySerialSettings = async () => {
+    if (tab.kind !== "serial") return;
+    const baudRate = Number(serialBaudRate);
+    if (!Number.isInteger(baudRate) || baudRate < 50 || baudRate > 4_000_000) {
+      setSerialSettingsError("Enter a baud rate from 50 to 4,000,000.");
+      return;
+    }
+    setSerialSettingsBusy(true);
+    setSerialSettingsError(null);
+    try {
+      await invoke("reconfigure_serial_terminal", {
+        sessionId,
+        baudRate,
+        dataBits: serialDataBits,
+        stopBits: serialStopBits,
+        parity: serialParity,
+        flowControl: serialFlowControl,
+      });
+      serialEncodingRef.current = serialEncoding;
+      updateSerialSessionSettings(sessionId, {
+        baudRate,
+        serialDataBits,
+        serialStopBits,
+        serialParity,
+        serialFlowControl,
+        serialEncoding,
+      }, saveSerialDefault);
+      setShowSerialSettings(false);
+      setError(null);
+      terminalRef.current?.writeln(`\r\n\x1b[36m[Serial updated: ${serialFormatLabel(baudRate, serialDataBits, serialParity, serialStopBits)}]\x1b[0m`);
+      terminalRef.current?.focus();
+    } catch (reason) {
+      setSerialSettingsError(String(reason));
+    } finally {
+      setSerialSettingsBusy(false);
+    }
+  };
+
   return (
     <section
       className={`terminal-pane ${active ? "active" : ""}`}
@@ -416,6 +477,19 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
               disabled={status !== "active"}
             >
               <DatabaseZap size={15} /> SFTP Files
+            </button>
+          )}
+          {tab.kind === "serial" && (
+            <button
+              type="button"
+              onClick={() => {
+                setSerialSettingsError(null);
+                setShowSerialSettings((value) => !value);
+              }}
+              title="Change serial speed and line settings without closing this session"
+              disabled={status !== "active"}
+            >
+              <Gauge size={15} /> {(tab.connection?.baudRate ?? 115200).toLocaleString()} baud
             </button>
           )}
           <button
@@ -462,6 +536,28 @@ export function TerminalPane({ tab, active, pageActive, layoutKey }: TerminalPan
           </button>
         </div>
       </div>
+      {tab.kind === "serial" && showSerialSettings && (
+        <form className="serial-live-settings" onSubmit={(event) => { event.preventDefault(); void applySerialSettings(); }}>
+          <header>
+            <div><span>Live serial settings</span><strong>{tab.connection?.serialPort}</strong><small>Changes apply to this open tab immediately.</small></div>
+            <button type="button" onClick={() => setShowSerialSettings(false)} aria-label="Close serial settings"><X size={16} /></button>
+          </header>
+          <div className="serial-live-speed-grid">
+            <label className="field"><span>Common speed</span><select aria-label="Active serial speed preset" value={commonBaudRates.includes(Number(serialBaudRate)) ? serialBaudRate : "custom"} onChange={(event) => setSerialBaudRate(event.target.value === "custom" ? "" : event.target.value)}>{baudRateGroups.map((group) => <optgroup key={group.label} label={group.label}>{group.rates.map((rate) => <option key={rate} value={rate}>{rate.toLocaleString()} baud</option>)}</optgroup>)}<option value="custom">Custom speed…</option></select></label>
+            <label className="field"><span>Manual baud rate</span><input aria-label="Active manual serial speed" inputMode="numeric" value={serialBaudRate} onChange={(event) => setSerialBaudRate(event.target.value.replace(/[^0-9]/g, ""))} placeholder="115200" /></label>
+          </div>
+          <div className="serial-live-options">
+            <div className="serial-option"><span>Data bits</span><div>{([8, 7, 6, 5] as const).map((value) => <button className={serialDataBits === value ? "active" : ""} type="button" key={value} onClick={() => setSerialDataBits(value)}>{value}</button>)}</div></div>
+            <div className="serial-option"><span>Stop bits</span><div>{([1, 2] as const).map((value) => <button className={serialStopBits === value ? "active" : ""} type="button" key={value} onClick={() => setSerialStopBits(value)}>{value}</button>)}</div></div>
+            <div className="serial-option"><span>Parity</span><div>{(["none", "odd", "even"] as const).map((value) => <button className={serialParity === value ? "active" : ""} type="button" key={value} onClick={() => setSerialParity(value)}>{value === "none" ? "None" : value[0].toUpperCase() + value.slice(1)}</button>)}</div></div>
+            <label className="field"><span>Flow control</span><select value={serialFlowControl} onChange={(event) => setSerialFlowControl(event.target.value as SerialFlowControl)}><option value="none">None</option><option value="hardware">RTS/CTS</option><option value="software">XON/XOFF</option></select></label>
+            <label className="field"><span>Character encoding</span><select value={serialEncoding} onChange={(event) => setSerialEncoding(event.target.value as SerialEncoding)}><option value="utf-8">UTF-8</option><option value="windows-1252">Windows-1252</option><option value="iso-8859-1">ISO-8859-1 / Latin-1</option></select></label>
+          </div>
+          {isSavedSerialProfile && <label className="serial-live-save"><input type="checkbox" checked={saveSerialDefault} onChange={(event) => setSaveSerialDefault(event.target.checked)} /> Use these settings next time for this saved connection</label>}
+          {serialSettingsError && <div className="serial-live-error">{serialSettingsError}</div>}
+          <footer><span>{serialBaudRate ? serialFormatLabel(Number(serialBaudRate), serialDataBits, serialParity, serialStopBits) : "Enter a speed"}</span><button type="button" onClick={() => setShowSerialSettings(false)}>Cancel</button><button className="primary-action" type="submit" disabled={serialSettingsBusy}><Check size={14} /> {serialSettingsBusy ? "Applying…" : "Apply live"}</button></footer>
+        </form>
+      )}
       {error && (
         <div className="terminal-error" role="alert">
           <span>{error}</span>

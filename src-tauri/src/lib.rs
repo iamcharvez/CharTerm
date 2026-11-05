@@ -62,6 +62,7 @@ pub fn run() {
             local_terminal::close_local_terminal,
             serial_terminal::list_serial_ports,
             serial_terminal::create_serial_terminal,
+            serial_terminal::reconfigure_serial_terminal,
             serial_terminal::write_serial_terminal,
             serial_terminal::close_serial_terminal,
             tcp_terminal::create_tcp_terminal,
