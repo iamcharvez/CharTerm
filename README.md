@@ -5,6 +5,12 @@
 [![Latest release](https://img.shields.io/github/v/release/iamcharvez/CharTerm?display_name=tag&sort=semver&style=flat-square&color=22D3EE)](https://github.com/iamcharvez/CharTerm/releases/latest)
 [![Release builds](https://github.com/iamcharvez/CharTerm/actions/workflows/release-installers.yml/badge.svg)](https://github.com/iamcharvez/CharTerm/actions/workflows/release-installers.yml)
 
+## Application screenshot
+
+![CharTerm desktop dashboard](docs/images/charterm-dashboard.png)
+
+*CharTerm's connection workspace with quick access to terminal sessions, saved connections, network scanning, and IP calculation.*
+
 ## Download CharTerm
 
 Choose your platform below. Each button opens the **Assets** section of the latest published GitHub Release, where you can select the installer format and, on macOS, the correct processor architecture.
